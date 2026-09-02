@@ -1,12 +1,12 @@
 import base64
 import io
-import altair as alt
 import numpy as np
 import pandas as pd
 import scipy.fft as fft
 import soundfile as sf
 import streamlit as st
 import streamlit.components.v1 as components
+import altair as alt
 
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
@@ -54,10 +54,12 @@ def reset_all_session_states():
 
 
 # ----------------------------------------------------
-# Custom Auto-Stopping 10-Second Recorder Component
+# Declare Custom Bidirectional Component
 # ----------------------------------------------------
-def custom_10s_audio_recorder():
-    html_code = """
+_recorder_component = components.declare_component(
+    "custom_10s_audio_recorder",
+    value=None,
+    html="""
     <div style="font-family: system-ui, -apple-system, sans-serif; display: flex; align-items: center; gap: 15px; background-color: #f0f2f6; padding: 12px 18px; border-radius: 8px;">
         <button id="recordBtn" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #ff4b4b; color: white; cursor: pointer; font-weight: 600; font-size: 14px; transition: background-color 0.2s;">
             🔴 Aufnahme starten (Max 10s)
@@ -66,6 +68,14 @@ def custom_10s_audio_recorder():
     </div>
 
     <script>
+    function sendValueToStreamlit(value) {
+        window.parent.postMessage({
+            isStreamlitMessage: true,
+            type: "streamlit:setComponentValue",
+            value: value
+        }, "*");
+    }
+
     let mediaRecorder;
     let audioChunks = [];
     let countdownInterval;
@@ -98,15 +108,10 @@ def custom_10s_audio_recorder():
                 reader.readAsDataURL(audioBlob);
                 reader.onloadend = () => {
                     const base64Audio = reader.result.split(',')[1];
-                    // Transmit base64 audio string to Streamlit
-                    window.parent.postMessage({
-                        type: "streamlit:setComponentValue",
-                        value: base64Audio
-                    }, "*");
+                    sendValueToStreamlit(base64Audio);
                     status.innerText = "Aufnahme beendet (10s erreicht)";
                 };
 
-                // Turn off microphone tracks
                 stream.getTracks().forEach(track => track.stop());
             };
 
@@ -126,7 +131,6 @@ def custom_10s_audio_recorder():
                 }
             }, 1000);
 
-            // HARD AUTO-STOP at 10.0 seconds (10,000 ms)
             autoStopTimeout = setTimeout(() => {
                 if (mediaRecorder.state === "recording") {
                     mediaRecorder.stop();
@@ -139,10 +143,15 @@ def custom_10s_audio_recorder():
     });
     </script>
     """
-    return components.html(html_code, height=75)
+)
 
 
-audio_b64 = custom_10s_audio_recorder()
+def custom_10s_audio_recorder(key=None):
+    return _recorder_component(key=key, default=None)
+
+
+# Render custom 10s audio component
+audio_b64 = custom_10s_audio_recorder(key="recorder")
 
 if audio_b64:
     current_bytes = base64.b64decode(audio_b64)
