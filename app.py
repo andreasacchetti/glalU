@@ -1,3 +1,4 @@
+import base64
 import io
 import altair as alt
 import numpy as np
@@ -5,6 +6,7 @@ import pandas as pd
 import scipy.fft as fft
 import soundfile as sf
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
@@ -51,10 +53,99 @@ def reset_all_session_states():
         st.session_state[key] = 0.0
 
 
-audio_file = st.audio_input("Record your audio")
+# ----------------------------------------------------
+# Custom Auto-Stopping 10-Second Recorder Component
+# ----------------------------------------------------
+def custom_10s_audio_recorder():
+    html_code = """
+    <div style="font-family: system-ui, -apple-system, sans-serif; display: flex; align-items: center; gap: 15px; background-color: #f0f2f6; padding: 12px 18px; border-radius: 8px;">
+        <button id="recordBtn" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #ff4b4b; color: white; cursor: pointer; font-weight: 600; font-size: 14px; transition: background-color 0.2s;">
+            🔴 Aufnahme starten (Max 10s)
+        </button>
+        <span id="status" style="font-size: 14px; color: #31333F; font-weight: 500;">Bereit</span>
+    </div>
 
-if audio_file is not None:
-    current_bytes = audio_file.getvalue()
+    <script>
+    let mediaRecorder;
+    let audioChunks = [];
+    let countdownInterval;
+    let autoStopTimeout;
+
+    const recordBtn = document.getElementById('recordBtn');
+    const status = document.getElementById('status');
+
+    recordBtn.addEventListener('click', async () => {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            return;
+        }
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            audioChunks = [];
+
+            mediaRecorder.ondataavailable = event => audioChunks.push(event.data);
+
+            mediaRecorder.onstop = () => {
+                clearInterval(countdownInterval);
+                clearTimeout(autoStopTimeout);
+                status.innerText = "Verarbeite Aufnahme...";
+                recordBtn.disabled = false;
+                recordBtn.style.backgroundColor = "#ff4b4b";
+
+                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                const reader = new FileReader();
+                reader.readAsDataURL(audioBlob);
+                reader.onloadend = () => {
+                    const base64Audio = reader.result.split(',')[1];
+                    // Transmit base64 audio string to Streamlit
+                    window.parent.postMessage({
+                        type: "streamlit:setComponentValue",
+                        value: base64Audio
+                    }, "*");
+                    status.innerText = "Aufnahme beendet (10s erreicht)";
+                };
+
+                // Turn off microphone tracks
+                stream.getTracks().forEach(track => track.stop());
+            };
+
+            mediaRecorder.start();
+            recordBtn.disabled = true;
+            recordBtn.style.backgroundColor = "#cccccc";
+
+            let remaining = 10;
+            status.innerText = `⏱️ Nimmt auf... (${remaining}s)`;
+
+            countdownInterval = setInterval(() => {
+                remaining--;
+                if (remaining > 0) {
+                    status.innerText = `⏱️ Nimmt auf... (${remaining}s)`;
+                } else {
+                    clearInterval(countdownInterval);
+                }
+            }, 1000);
+
+            // HARD AUTO-STOP at 10.0 seconds (10,000 ms)
+            autoStopTimeout = setTimeout(() => {
+                if (mediaRecorder.state === "recording") {
+                    mediaRecorder.stop();
+                }
+            }, 10000);
+
+        } catch (err) {
+            status.innerText = "❌ Mikrofonzugriff verweigert oder nicht unterstützt.";
+        }
+    });
+    </script>
+    """
+    return components.html(html_code, height=75)
+
+
+audio_b64 = custom_10s_audio_recorder()
+
+if audio_b64:
+    current_bytes = base64.b64decode(audio_b64)
 
     # Reset ALL states (Time + FFT + Peaks) if a new recording is received
     if st.session_state.last_audio_len != len(current_bytes):
@@ -65,15 +156,6 @@ if audio_file is not None:
     data, fs = sf.read(io.BytesIO(current_bytes))
     if len(data.shape) > 1:
         data = data[:, 0]
-
-    # ----------------------------------------------------
-    # 10-Second Duration Cap (Memory & Resource Safeguard)
-    # ----------------------------------------------------
-    max_seconds = 10.0
-    max_samples = int(max_seconds * fs)
-    if len(data) > max_samples:
-        data = data[:max_samples]
-        st.warning(f"⚠️ Die Aufnahme wurde auf maximal {int(max_seconds)} Sekunden gekürzt, um die Performance zu optimieren.")
 
     t = np.arange(len(data)) / fs
 
