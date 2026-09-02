@@ -4,37 +4,18 @@ import scipy.fft as fft
 import soundfile as sf
 import streamlit as st
 import plotly.graph_objects as go
+from streamlit_plotly_events import plotly_events
 
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
 
 # ----------------------------------------------------
-# Session State Setup (Coordinates Memory)
+# Session State Setup (Native Zoom Range Memory)
 # ----------------------------------------------------
 if "time_x_range" not in st.session_state:
     st.session_state.time_x_range = None
-if "time_y_range" not in st.session_state:
-    st.session_state.time_y_range = None
-
 if "fft_x_range" not in st.session_state:
     st.session_state.fft_x_range = None
-if "fft_y_range" not in st.session_state:
-    st.session_state.fft_y_range = None
-
-
-def capture_chart_zoom(widget_key, x_state_key, y_state_key):
-    """Extracts explicit box-zoom coordinates from Plotly event payload and updates state."""
-    if widget_key in st.session_state and st.session_state[widget_key]:
-        state = st.session_state[widget_key]
-        if "selection" in state and "box" in state["selection"]:
-            box_data = state["selection"]["box"]
-            if len(box_data) > 0:
-                box = box_data[0]
-                if "x" in box and len(box["x"]) == 2:
-                    st.session_state[x_state_key] = [min(box["x"]), max(box["x"])]
-                if "y" in box and len(box["y"]) == 2:
-                    st.session_state[y_state_key] = [min(box["y"]), max(box["y"])]
-
 
 audio_file = st.audio_input("Record your audio")
 
@@ -44,31 +25,25 @@ if audio_file is not None:
         data = data[:, 0]
     t = np.arange(len(data)) / fs
 
-    # Process pending events from previous run
-    capture_chart_zoom("time_plot", "time_x_range", "time_y_range")
-    capture_chart_zoom("fft_plot", "fft_x_range", "fft_y_range")
-
     # ----------------------------------------------------
     # 1. Signal im Zeitbereich
     # ----------------------------------------------------
     st.subheader("1. Signal im Zeitbereich")
 
-    # Display indicator values based on captured zoom
-    t_min_disp = st.session_state.time_x_range[0] if st.session_state.time_x_range else float(t[0])
-    t_max_disp = st.session_state.time_x_range[1] if st.session_state.time_x_range else float(t[-1])
+    col_t_ind1, col_t_ind2, col_t_btn = st.columns([2, 2, 1])
 
-    y_min_disp = st.session_state.time_y_range[0] if st.session_state.time_y_range else float(np.min(data))
-    y_max_disp = st.session_state.time_y_range[1] if st.session_state.time_y_range else float(np.max(data))
+    t_start = st.session_state.time_x_range[0] if st.session_state.time_x_range else float(t[0])
+    t_end = st.session_state.time_x_range[1] if st.session_state.time_x_range else float(t[-1])
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("⏱️ X Min (s)", f"{t_min_disp:.4f} s")
-    with c2:
-        st.metric("⏱️ X Max (s)", f"{t_max_disp:.4f} s")
-    with c3:
-        st.metric("📈 Y Min", f"{y_min_disp:.4f}")
-    with c4:
-        st.metric("📈 Y Max", f"{y_max_disp:.4f}")
+    with col_t_ind1:
+        st.metric("⏱️ Startzeit (s)", f"{t_start:.4f} s")
+    with col_t_ind2:
+        st.metric("⏱️ Endzeit (s)", f"{t_end:.4f} s")
+    with col_t_btn:
+        st.write("")
+        if st.button("🔄 Zoom zurücksetzen", key="reset_time"):
+            st.session_state.time_x_range = None
+            st.rerun()
 
     step_t = max(1, len(t) // 5000)
     fig_time = go.Figure()
@@ -82,29 +57,32 @@ if audio_file is not None:
         height=220,
         margin=dict(l=20, r=20, t=20, b=30),
         xaxis_title="Zeit [s]",
-        yaxis_title="Amplitude",
-        dragmode="select"
+        yaxis_title="Amplitude"
     )
 
-    # Force range back whenever chart is rendered
     if st.session_state.time_x_range is not None:
         layout_time["xaxis"] = dict(range=st.session_state.time_x_range)
-    if st.session_state.time_y_range is not None:
-        layout_time["yaxis"] = dict(range=st.session_state.time_y_range)
 
     fig_time.update_layout(**layout_time)
 
-    # Render Time Plot and catch events
-    st.plotly_chart(
-        fig_time, 
-        use_container_width=True, 
-        on_select="rerun",
-        selection_mode=["box"],
-        key="time_plot"
+    # Capture native Plotly relayout events (zoom, pan, autoscale)
+    time_events = plotly_events(
+        fig_time,
+        relayout_select=True,
+        key="time_chart"
     )
 
-    # Apply active slice mask for FFT calculation
-    mask = (t >= t_min_disp) & (t <= t_max_disp)
+    # Update state if a native relayout event occurred
+    if time_events and len(time_events) > 0:
+        event = time_events[-1]
+        if "xaxis.range[0]" in event and "xaxis.range[1]" in event:
+            new_range = [event["xaxis.range[0]"], event["xaxis.range[1]"]]
+            if st.session_state.time_x_range != new_range:
+                st.session_state.time_x_range = new_range
+                st.rerun()
+
+    # Apply active time window slice for FFT
+    mask = (t >= t_start) & (t <= t_end)
     xfft = data[mask]
     tfft = t[mask]
 
@@ -123,6 +101,12 @@ if audio_file is not None:
         f = np.arange(len(P)) * fs / m
 
         st.subheader("2. FFT Spektrum")
+
+        col_f_hdr, col_f_btn = st.columns([4, 1])
+        with col_f_btn:
+            if st.button("🔄 Zoom zurücksetzen", key="reset_fft"):
+                st.session_state.fft_x_range = None
+                st.rerun()
 
         valid_mask = f <= 5000
         f_sub = f[valid_mask]
@@ -146,7 +130,7 @@ if audio_file is not None:
                     if val > 0:
                         user_freqs.append(val)
 
-        # Plotly FFT Chart
+        # Native Plotly FFT Chart
         fig_fft = go.Figure()
         fig_fft.add_trace(go.Scatter(
             x=f_sub[::step_f], y=P_sub[::step_f],
@@ -162,26 +146,28 @@ if audio_file is not None:
             height=380,
             margin=dict(l=20, r=20, t=30, b=30),
             xaxis_title="Frequenz [Hz]",
-            yaxis_title="|FFT|",
-            dragmode="select"
+            yaxis_title="|FFT|"
         )
 
-        # Force range back whenever peaks update or script reruns
         if st.session_state.fft_x_range is not None:
             layout_fft["xaxis"] = dict(range=st.session_state.fft_x_range)
-        if st.session_state.fft_y_range is not None:
-            layout_fft["yaxis"] = dict(range=st.session_state.fft_y_range)
 
         fig_fft.update_layout(**layout_fft)
 
-        # Render FFT Chart
-        st.plotly_chart(
-            fig_fft, 
-            use_container_width=True, 
-            on_select="rerun",
-            selection_mode=["box"],
-            key="fft_plot"
+        # Capture native Plotly zoom/pan relayout events for FFT
+        fft_events = plotly_events(
+            fig_fft,
+            relayout_select=True,
+            key="fft_chart"
         )
+
+        if fft_events and len(fft_events) > 0:
+            event = fft_events[-1]
+            if "xaxis.range[0]" in event and "xaxis.range[1]" in event:
+                new_range = [event["xaxis.range[0]"], event["xaxis.range[1]"]]
+                if st.session_state.fft_x_range != new_range:
+                    st.session_state.fft_x_range = new_range
+                    st.rerun()
 
         # ----------------------------------------------------
         # 3. Fourierkoeffizienten & Audio-Synthese
