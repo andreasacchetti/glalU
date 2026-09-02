@@ -9,14 +9,6 @@ st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
 
 # ----------------------------------------------------
-# Session State for Axis Ranges
-# ----------------------------------------------------
-if "fft_x_range" not in st.session_state:
-    st.session_state.fft_x_range = None
-if "fft_y_range" not in st.session_state:
-    st.session_state.fft_y_range = None
-
-# ----------------------------------------------------
 # 1. Audio Aufnahme
 # ----------------------------------------------------
 audio_file = st.audio_input("Record your audio")
@@ -50,14 +42,14 @@ if audio_file is not None:
         margin=dict(l=20, r=20, t=30, b=20), height=220,
         dragmode="zoom"
     )
-    st.plotly_chart(fig_time, use_container_width=True, key="time_chart")
+    st.plotly_chart(fig_time, use_container_width=True)
 
     mask = (t >= t_min) & (t <= t_max)
     xfft = data[mask]
     tfft = t[mask]
 
     # ----------------------------------------------------
-    # 3. FFT Berechnung & Peak-Eingabe
+    # 3. FFT Berechnung
     # ----------------------------------------------------
     if len(xfft) > 0:
         L = len(xfft)
@@ -71,7 +63,7 @@ if audio_file is not None:
         f = np.arange(len(P)) * fs / m
 
         st.subheader("2. FFT Spektrum & Peaks")
-        st.caption("💡 Trage unten bis zu 10 Peak-Frequenzen ein. Der Zoom-Ausschnitt bleibt fixiert.")
+        st.caption("💡 Trage unten bis zu 10 Peak-Frequenzen ein. Der Zoom-Ausschnitt im Chart bleibt fixiert.")
 
         # 10 manual input boxes
         with st.expander("🎯 bis zu 10 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
@@ -102,45 +94,37 @@ if audio_file is not None:
                 exact_peak = float(u_freq)
             snapped_peaks.append(exact_peak)
 
-        # Build Plotly Figure
-        valid_mask = f <= 5000
-        fig_fft = go.Figure()
-        fig_fft.add_trace(go.Scatter(x=f[valid_mask], y=P[valid_mask], mode="lines", name="|FFT|"))
+        # ----------------------------------------------------
+        # Streamlit Fragment: Prevents full plot redraw on updates
+        # ----------------------------------------------------
+        @st.fragment
+        def render_fft_plot(freq_axis, power_spectrum, active_peaks):
+            valid_mask = freq_axis <= 5000
+            fig_fft = go.Figure()
+            fig_fft.add_trace(go.Scatter(x=freq_axis[valid_mask], y=power_spectrum[valid_mask], mode="lines", name="|FFT|"))
 
-        # Add vertical red lines for each entered peak
-        for peak_f in snapped_peaks:
-            fig_fft.add_vline(
-                x=peak_f, 
-                line_width=2, 
-                line_dash="dash", 
-                line_color="red",
-                annotation_text=f"{peak_f:.1f} Hz",
-                annotation_position="top right"
+            for peak_f in active_peaks:
+                fig_fft.add_vline(
+                    x=peak_f, 
+                    line_width=2, 
+                    line_dash="dash", 
+                    line_color="red",
+                    annotation_text=f"{peak_f:.1f} Hz",
+                    annotation_position="top right"
+                )
+
+            fig_fft.update_layout(
+                xaxis_title="Frequenz [Hz]", yaxis_title="|FFT|",
+                margin=dict(l=20, r=20, t=30, b=20), height=380,
+                dragmode="zoom",
+                uirevision="constant_key"
             )
+            st.plotly_chart(fig_fft, use_container_width=True, key="isolated_fft_chart")
 
-        # Apply saved manual zoom coordinates from session state if available
-        layout_dict = dict(
-            xaxis_title="Frequenz [Hz]", yaxis_title="|FFT|",
-            margin=dict(l=20, r=20, t=30, b=20), height=380,
-            dragmode="zoom"
-        )
-        if st.session_state.fft_x_range:
-            layout_dict["xaxis"] = dict(range=st.session_state.fft_x_range)
-        if st.session_state.fft_y_range:
-            layout_dict["yaxis"] = dict(range=st.session_state.fft_y_range)
-
-        fig_fft.update_layout(**layout_dict)
-
-        # Render Chart and capture active viewport event
-        chart_event = st.plotly_chart(
-            fig_fft, 
-            use_container_width=True, 
-            key="fft_chart_persistent",
-            on_select="ignore"
-        )
+        render_fft_plot(f, P, snapped_peaks)
 
         # ----------------------------------------------------
-        # 4. Koeffizienten & Synthese Audio (wenn ≥ 1 Peak)
+        # 4. Koeffizienten & Synthese Audio
         # ----------------------------------------------------
         if len(snapped_peaks) > 0:
             st.subheader("3. Fourierkoeffizienten & Audio-Synthese")
