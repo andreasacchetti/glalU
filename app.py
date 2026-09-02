@@ -1,7 +1,5 @@
 import base64
 import io
-import os
-import tempfile
 import numpy as np
 import pandas as pd
 import scipy.fft as fft
@@ -56,7 +54,7 @@ def reset_all_session_states():
 
 
 # ----------------------------------------------------
-# Declare Custom Bidirectional Component via Temp Dir
+# 10s Audio Recorder Component (Inline HTML)
 # ----------------------------------------------------
 COMPONENT_HTML = """
 <!DOCTYPE html>
@@ -64,23 +62,15 @@ COMPONENT_HTML = """
 <head>
     <meta charset="utf-8">
 </head>
-<body style="margin: 0; padding: 0;">
-    <div style="font-family: system-ui, -apple-system, sans-serif; display: flex; align-items: center; gap: 15px; background-color: #f0f2f6; padding: 12px 18px; border-radius: 8px;">
-        <button id="recordBtn" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #ff4b4b; color: white; cursor: pointer; font-weight: 600; font-size: 14px; transition: background-color 0.2s;">
+<body style="margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif;">
+    <div style="display: flex; align-items: center; gap: 15px; background-color: #f0f2f6; padding: 12px 18px; border-radius: 8px;">
+        <button id="recordBtn" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #ff4b4b; color: white; cursor: pointer; font-weight: 600; font-size: 14px;">
             🔴 Aufnahme starten (Max 10s)
         </button>
         <span id="status" style="font-size: 14px; color: #31333F; font-weight: 500;">Bereit</span>
     </div>
 
     <script>
-    function sendValueToStreamlit(value) {
-        window.parent.postMessage({
-            isStreamlitMessage: true,
-            type: "streamlit:setComponentValue",
-            value: value
-        }, "*");
-    }
-
     let mediaRecorder;
     let audioChunks = [];
     let countdownInterval;
@@ -113,8 +103,10 @@ COMPONENT_HTML = """
                 reader.readAsDataURL(audioBlob);
                 reader.onloadend = () => {
                     const base64Audio = reader.result.split(',')[1];
-                    sendValueToStreamlit(base64Audio);
-                    status.innerText = "Aufnahme beendet (10s erreicht)";
+                    // Send to parent Streamlit frame via URL Query Parameter
+                    const url = new URL(window.parent.location.href);
+                    url.searchParams.set('rec_data', base64Audio);
+                    window.parent.location.href = url.toString();
                 };
 
                 stream.getTracks().forEach(track => track.stop());
@@ -151,26 +143,11 @@ COMPONENT_HTML = """
 </html>
 """
 
-# Write HTML to a temp directory so declare_component can load it safely via path
-temp_dir = os.path.join(tempfile.gettempdir(), "streamlit_recorder_component")
-os.makedirs(temp_dir, exist_ok=True)
-index_path = os.path.join(temp_dir, "index.html")
+components.html(COMPONENT_HTML, height=70)
 
-with open(index_path, "w", encoding="utf-8") as f:
-    f.write(COMPONENT_HTML)
-
-_recorder_component = components.declare_component(
-    "custom_10s_audio_recorder",
-    path=temp_dir
-)
-
-
-def custom_10s_audio_recorder(key=None):
-    return _recorder_component(key=key, default=None)
-
-
-# Render custom 10s audio component
-audio_b64 = custom_10s_audio_recorder(key="recorder")
+# Check query params for audio data
+query_params = st.query_params
+audio_b64 = query_params.get("rec_data", None)
 
 if audio_b64:
     current_bytes = base64.b64decode(audio_b64)
@@ -195,7 +172,7 @@ if audio_b64:
     t_start_val = st.session_state.time_x_range[0] if st.session_state.time_x_range else float(t[0])
     t_end_val = st.session_state.time_x_range[1] if st.session_state.time_x_range else float(t[-1])
 
-    # Indicators + Compact Control Buttons
+    # Indicators + Control Buttons
     col_t_ind1, col_t_ind2, col_t_btn_back, col_t_btn_fwd, col_t_btn_reset, col_t_spacer = st.columns(
         [2, 2, 0.5, 0.5, 0.5, 4.5]
     )
