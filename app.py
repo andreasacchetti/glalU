@@ -1,13 +1,21 @@
 import io
 import numpy as np
-import pandas as pd
 import scipy.fft as fft
 import soundfile as sf
 import streamlit as st
-import altair as alt
+
+from bokeh.plotting import figure
+from bokeh.models import ColumnDataSource, Span, Label, CustomJS
+from streamlit_bokeh_events import streamlit_bokeh_events
 
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
+
+# Initialize persistent zoom memory
+if "fft_x_start" not in st.session_state:
+    st.session_state.fft_x_start = 0.0
+if "fft_x_end" not in st.session_state:
+    st.session_state.fft_x_end = 2000.0
 
 audio_file = st.audio_input("Record your audio")
 
@@ -17,9 +25,7 @@ if audio_file is not None:
         data = data[:, 0]
     t = np.arange(len(data)) / fs
 
-    # ----------------------------------------------------
     # 1. Signal im Zeitbereich
-    # ----------------------------------------------------
     st.subheader("1. Signal im Zeitbereich")
     t_min, t_max = st.slider(
         "FFT-Analysebereich anpassen [s]:",
@@ -29,39 +35,23 @@ if audio_file is not None:
         step=0.01
     )
 
-    # Downsample time domain data for stable rendering
-    max_pts = 5000
-    step = max(1, len(data) // max_pts)
-    df_time = pd.DataFrame({
-        "Zeit": np.round(t[::step], 4),
-        "Amplitude": np.round(data[::step], 4)
-    })
-
-    # Line chart for full time signal
-    line_time = alt.Chart(df_time).mark_line(color="#1f77b4").encode(
-        x=alt.X("Zeit:Q", title="Zeit [s]"),
-        y=alt.Y("Amplitude:Q", title="Amplitude")
-    )
-
-    # Highlight rectangle for selected time slice
-    df_window = pd.DataFrame([{"t0": t_min, "t1": t_max}])
-    highlight_window = alt.Chart(df_window).mark_rect(
-        color="orange", opacity=0.3
-    ).encode(
-        x="t0:Q",
-        x2="t1:Q"
-    )
-
-    chart_time = (line_time + highlight_window).properties(height=220).interactive()
-    st.altair_chart(chart_time, use_container_width=True)
+    # Time Domain Bokeh Plot
+    step_t = max(1, len(t) // 5000)
+    p_time = figure(height=200, sizing_mode="stretch_width", x_axis_label="Zeit [s]", y_axis_label="Amplitude")
+    p_time.line(t[::step_t], data[::step_t], line_width=1, color="#1f77b4")
+    
+    # Highlight region span
+    time_span = Span(location=t_min, dimension='height', line_color='orange', line_width=2)
+    time_span2 = Span(location=t_max, dimension='height', line_color='orange', line_width=2)
+    p_time.add_layout(time_span)
+    p_time.add_layout(time_span2)
+    st.bokeh_chart(p_time, use_container_width=True)
 
     mask = (t >= t_min) & (t <= t_max)
     xfft = data[mask]
     tfft = t[mask]
 
-    # ----------------------------------------------------
     # 2. FFT Spektrum
-    # ----------------------------------------------------
     if len(xfft) > 0:
         L = len(xfft)
         m = int(2 ** np.ceil(np.log2(L)))
@@ -74,17 +64,12 @@ if audio_file is not None:
         f = np.arange(len(P)) * fs / m
 
         st.subheader("2. FFT Spektrum")
-        st.caption("💡 **Zoom & Pan:** Nutze Mausrad/Touchpad. Für Box-Zoom **Shift-Taste gedrückt halten und Rechteck ziehen**.")
+        st.caption("🔍 **Nutze das Box-Zoom-Werkzeug** in der Bokeh-Toolbar (oben rechts am Graph), um ein Rechteck zu ziehen.")
 
         valid_mask = f <= 5000
         f_sub = f[valid_mask]
         P_sub = P[valid_mask]
-
-        step_fft = max(1, len(f_sub) // max_pts)
-        df_fft = pd.DataFrame({
-            "Frequenz": np.round(f_sub[::step_fft], 2),
-            "Magnitude": np.round(P_sub[::step_fft], 5)
-        })
+        step_f = max(1, len(f_sub) // 5000)
 
         with st.expander("🎯 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
             cols = st.columns(5)
@@ -112,30 +97,53 @@ if audio_file is not None:
                 exact_peak = float(u_freq)
             snapped_peaks.append(exact_peak)
 
-        # Main spectrum line
-        base_fft = alt.Chart(df_fft).mark_line(color="#1f77b4").encode(
-            x=alt.X("Frequenz:Q", title="Frequenz [Hz]"),
-            y=alt.Y("Magnitude:Q", title="|FFT|"),
-            tooltip=["Frequenz", "Magnitude"]
+        # Build Bokeh Plot with Box-Zoom Tools
+        p_fft = figure(
+            height=380, 
+            sizing_mode="stretch_width",
+            title="FFT Spektrum",
+            x_axis_label="Frequenz [Hz]",
+            y_axis_label="|FFT|",
+            tools="pan,box_zoom,wheel_zoom,reset,save",
+            active_drag="box_zoom",
+            x_range=(st.session_state.fft_x_start, st.session_state.fft_x_end)
         )
 
-        # Red vertical dashed rules for entered peaks
-        if len(snapped_peaks) > 0:
-            df_peaks = pd.DataFrame({"Peak": snapped_peaks})
-            peak_rules = alt.Chart(df_peaks).mark_rule(
-                color="red", 
-                strokeDash=[4, 4], 
-                strokeWidth=2
-            ).encode(x="Peak:Q")
-            final_fft = (base_fft + peak_rules).properties(height=380).interactive(bind_y=True)
-        else:
-            final_fft = base_fft.properties(height=380).interactive(bind_y=True)
+        source_fft = ColumnDataSource(data=dict(x=f_sub[::step_f], y=P_sub[::step_f]))
+        p_fft.line('x', 'y', source=source_fft, line_width=1.5, color="#1f77b4")
 
-        st.altair_chart(final_fft, use_container_width=True)
+        # Draw Vertical Lines for Peak Inputs
+        for peak_f in snapped_peaks:
+            vline = Span(location=peak_f, dimension='height', line_color='red', line_dash='dashed', line_width=2)
+            p_fft.add_layout(vline)
 
-        # ----------------------------------------------------
+        # JavaScript callback to update session_state bounds when zoomed/panned
+        source_event = ColumnDataSource(data=dict(x_range=[]))
+        callback = CustomJS(args=dict(x_range=p_fft.x_range, source=source_event), code="""
+            var start = x_range.start;
+            var end = x_range.end;
+            source.data = {'x_range': [start, end]};
+            source.change.emit();
+        """)
+        p_fft.x_range.js_on_change('start', callback)
+        p_fft.x_range.js_on_change('end', callback)
+
+        # Render Bokeh chart with event tracking
+        res = streamlit_bokeh_events(
+            p_fft,
+            events="x_range",
+            key="fft_bokeh_chart",
+            refresh_on_update=False
+        )
+
+        # Preserve Zoom Range across inputs
+        if res and "x_range" in res:
+            bounds = res["x_range"]
+            if len(bounds) == 2:
+                st.session_state.fft_x_start = bounds[0]
+                st.session_state.fft_x_end = bounds[1]
+
         # 3. Fourierkoeffizienten & Synthese
-        # ----------------------------------------------------
         if len(snapped_peaks) > 0:
             st.subheader("3. Fourierkoeffizienten & Audio-Synthese")
             col_left, col_right = st.columns([1, 1])
