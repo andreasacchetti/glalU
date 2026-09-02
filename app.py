@@ -10,7 +10,7 @@ st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
 
 # ----------------------------------------------------
-# Session State: Undo / Redo Stacks
+# Session State: Undo / Redo Stacks & State Tracking
 # ----------------------------------------------------
 if "time_undo" not in st.session_state:
     st.session_state.time_undo = []
@@ -30,10 +30,31 @@ if "fft_x_range" not in st.session_state:
 if "fft_y_range" not in st.session_state:
     st.session_state.fft_y_range = None
 
+if "audio_id" not in st.session_state:
+    st.session_state.audio_id = None
+
 audio_file = st.audio_input("Record your audio")
 
 if audio_file is not None:
-    data, fs = sf.read(io.BytesIO(audio_file.getvalue()))
+    current_bytes = audio_file.getvalue()
+
+    # Reset all zoom parameters and peaks if a new audio recording is captured
+    if st.session_state.audio_id != current_bytes:
+        st.session_state.audio_id = current_bytes
+        st.session_state.time_undo.clear()
+        st.session_state.time_redo.clear()
+        st.session_state.time_x_range = None
+        st.session_state.time_y_range = None
+
+        st.session_state.fft_undo.clear()
+        st.session_state.fft_redo.clear()
+        st.session_state.fft_x_range = None
+        st.session_state.fft_y_range = None
+
+        for i in range(10):
+            st.session_state[f"peak_in_{i}"] = 0.0
+
+    data, fs = sf.read(io.BytesIO(current_bytes))
     if len(data.shape) > 1:
         data = data[:, 0]
     t = np.arange(len(data)) / fs
@@ -46,7 +67,7 @@ if audio_file is not None:
     t_start_val = st.session_state.time_x_range[0] if st.session_state.time_x_range else float(t[0])
     t_end_val = st.session_state.time_x_range[1] if st.session_state.time_x_range else float(t[-1])
 
-    # Indicators + Compact Button Grouping
+    # Indicators + Compact Control Buttons
     col_t_ind1, col_t_ind2, col_t_btn_back, col_t_btn_fwd, col_t_btn_reset, col_t_spacer = st.columns(
         [2, 2, 0.5, 0.5, 0.5, 4.5]
     )
@@ -54,7 +75,7 @@ if audio_file is not None:
         st.metric("⏱️ Startzeit (s)", f"{t_start_val:.4f} s")
     with col_t_ind2:
         st.metric("⏱️ Endzeit (s)", f"{t_end_val:.4f} s")
-        
+
     with col_t_btn_back:
         st.write("")
         if st.button("⏪", key="back_time_zoom", help="Zurück", disabled=len(st.session_state.time_undo) == 0):
@@ -112,7 +133,7 @@ if audio_file is not None:
 
             if st.session_state.time_x_range != new_tx or st.session_state.time_y_range != new_ty:
                 st.session_state.time_undo.append((st.session_state.time_x_range, st.session_state.time_y_range))
-                st.session_state.time_redo.clear()  # Clear forward stack on new selection
+                st.session_state.time_redo.clear()
                 st.session_state.time_x_range = new_tx
                 st.session_state.time_y_range = new_ty
                 st.rerun()
@@ -196,7 +217,6 @@ if audio_file is not None:
         user_freq_keys = [f"peak_in_{i}" for i in range(10)]
         active_peaks = [st.session_state[k] for k in user_freq_keys if k in st.session_state and st.session_state[k] > 0]
 
-        # Draw red dashed rules
         if len(active_peaks) > 0:
             df_peaks = pd.DataFrame({"Peak": active_peaks})
             rule_chart = (
@@ -204,7 +224,6 @@ if audio_file is not None:
                 .mark_rule(color="red", strokeDash=[4, 4], strokeWidth=2, clip=True)
                 .encode(x=alt.X("Peak:Q", scale=x_scale_fft))
             )
-            # Shared scales prevent layer-merge rounding glitches
             chart_fft = alt.layer(base_fft, rule_chart).resolve_scale(x='shared', y='shared')
         else:
             chart_fft = base_fft
@@ -271,7 +290,13 @@ if audio_file is not None:
                 st.download_button("💾 Fourierdaten exportieren (.txt)", export_str, "Fourierkoeffizienten.txt", "text/plain")
 
             with col_right:
-                st.audio(audio_file.getvalue(), format="audio/wav")
+                # 1. Original Audio Cut (Cropped to FFT window)
+                st.caption("🎵 **Originalsignal (Ausschnitt)**")
+                orig_cut_buffer = io.BytesIO()
+                sf.write(orig_cut_buffer, xfft, fs, format="WAV")
+                st.audio(orig_cut_buffer.getvalue(), format="audio/wav")
+
+                # 2. Synthesized Audio (Cropped to FFT window)
                 xsynth = np.zeros_like(tfft)
                 for i in range(len(user_freqs)):
                     xsynth += a_coeffs[i] * np.cos(2 * np.pi * user_freqs[i] * tfft)
@@ -280,6 +305,7 @@ if audio_file is not None:
                 if np.max(np.abs(xsynth)) != 0:
                     xsynth *= (np.max(np.abs(xfft)) / np.max(np.abs(xsynth)))
 
+                st.caption("🎼 **Synthetisiertes Fouriersignal (Ausschnitt)**")
                 synth_buffer = io.BytesIO()
                 sf.write(synth_buffer, xsynth, fs, format="WAV")
                 st.audio(synth_buffer.getvalue(), format="audio/wav")
