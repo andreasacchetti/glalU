@@ -1,14 +1,141 @@
 import base64
 import io
+import os
+import tempfile
 import numpy as np
 import pandas as pd
 import scipy.fft as fft
 import soundfile as sf
 import streamlit as st
+import streamlit.components.v1 as components
 import altair as alt
 
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
+
+# ----------------------------------------------------
+# Custom Bi-Directional Streamlit Component
+# ----------------------------------------------------
+COMPONENT_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+</head>
+<body style="margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif;">
+    <div style="display: flex; align-items: center; gap: 15px; background-color: #f0f2f6; padding: 12px 18px; border-radius: 8px;">
+        <button id="recordBtn" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #ff4b4b; color: white; cursor: pointer; font-weight: 600; font-size: 14px; transition: background-color 0.2s;">
+            🔴 Aufnahme starten (Max 10s)
+        </button>
+        <span id="status" style="font-size: 14px; color: #31333F; font-weight: 500;">Bereit</span>
+    </div>
+
+    <script>
+    function sendMessageToStreamlitClient(type, data) {
+        var outData = Object.assign({
+            isStreamlitMessage: true,
+            type: type,
+        }, data);
+        window.parent.postMessage(outData, "*");
+    }
+
+    function setComponentValue(value) {
+        sendMessageToStreamlitClient("streamlit:setComponentValue", {value: value});
+    }
+
+    function setFrameHeight(height) {
+        sendMessageToStreamlitClient("streamlit:setFrameHeight", {height: height});
+    }
+
+    setFrameHeight(70);
+
+    let mediaRecorder;
+    let audioChunks = [];
+    let countdownInterval;
+    let autoStopTimeout;
+
+    const recordBtn = document.getElementById('recordBtn');
+    const status = document.getElementById('status');
+
+    function stopRecording() {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+        }
+    }
+
+    recordBtn.addEventListener('click', async () => {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            stopRecording();
+            return;
+        }
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            audioChunks = [];
+
+            mediaRecorder.ondataavailable = event => {
+                if (event.data.size > 0) audioChunks.push(event.data);
+            };
+
+            mediaRecorder.onstop = () => {
+                clearInterval(countdownInterval);
+                clearTimeout(autoStopTimeout);
+                status.innerText = "Verarbeite Aufnahme...";
+                recordBtn.innerText = "🔴 Aufnahme starten (Max 10s)";
+                recordBtn.style.backgroundColor = "#ff4b4b";
+
+                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                const reader = new FileReader();
+                reader.readAsDataURL(audioBlob);
+                reader.onloadend = () => {
+                    const base64Audio = reader.result.split(',')[1];
+                    setComponentValue(base64Audio);
+                    status.innerText = "Aufnahme abgeschlossen!";
+                };
+
+                stream.getTracks().forEach(track => track.stop());
+            };
+
+            mediaRecorder.start();
+            recordBtn.innerText = "⏹️ Aufnahme stoppen";
+            recordBtn.style.backgroundColor = "#2b2b2b";
+
+            let remaining = 10;
+            status.innerText = `⏱️ Nimmt auf... (${remaining}s)`;
+
+            countdownInterval = setInterval(() => {
+                remaining--;
+                if (remaining > 0) {
+                    status.innerText = `⏱️ Nimmt auf... (${remaining}s)`;
+                } else {
+                    clearInterval(countdownInterval);
+                }
+            }, 1000);
+
+            autoStopTimeout = setTimeout(() => {
+                stopRecording();
+            }, 10000);
+
+        } catch (err) {
+            status.innerText = "❌ Mikrofonzugriff verweigert oder nicht unterstützt.";
+        }
+    });
+    </script>
+</body>
+</html>
+"""
+
+# Declare component using a temporary directory
+@st.cache_resource
+def get_recorder_component():
+    build_dir = tempfile.mkdtemp()
+    index_path = os.path.join(build_dir, "index.html")
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write(COMPONENT_HTML)
+    return components.declare_component("custom_audio_recorder", path=build_dir)
+
+custom_audio_recorder = get_recorder_component()
 
 # ----------------------------------------------------
 # Session State Setup
@@ -36,7 +163,6 @@ if "last_audio_len" not in st.session_state:
 
 
 def reset_all_session_states():
-    """Purges zoom memory and input widget state for BOTH charts."""
     st.session_state.time_undo.clear()
     st.session_state.time_redo.clear()
     st.session_state.time_x_range = None
@@ -52,15 +178,13 @@ def reset_all_session_states():
         st.session_state[key] = 0.0
 
 
-# ----------------------------------------------------
-# Native Audio Input Widget
-# ----------------------------------------------------
-audio_file = st.audio_input("🔴 Audio aufnehmen")
+# Call custom bi-directional component
+audio_b64 = custom_audio_recorder(default=None)
 
-if audio_file is not None:
-    current_bytes = audio_file.read()
+if audio_b64:
+    current_bytes = base64.b64decode(audio_b64)
 
-    # Reset state only when receiving a new recording
+    # Reset state only on new recording
     if st.session_state.last_audio_len != len(current_bytes):
         st.session_state.last_audio_len = len(current_bytes)
         reset_all_session_states()
@@ -69,11 +193,6 @@ if audio_file is not None:
     data, fs = sf.read(io.BytesIO(current_bytes))
     if len(data.shape) > 1:
         data = data[:, 0]
-
-    # Enforce maximum 10-second slice if longer
-    max_samples = int(10 * fs)
-    if len(data) > max_samples:
-        data = data[:max_samples]
 
     t = np.arange(len(data)) / fs
 
@@ -85,7 +204,6 @@ if audio_file is not None:
     t_start_val = st.session_state.time_x_range[0] if st.session_state.time_x_range else float(t[0])
     t_end_val = st.session_state.time_x_range[1] if st.session_state.time_x_range else float(t[-1])
 
-    # Indicators + Control Buttons
     col_t_ind1, col_t_ind2, col_t_btn_back, col_t_btn_fwd, col_t_btn_reset, col_t_spacer = st.columns(
         [2, 2, 0.5, 0.5, 0.5, 4.5]
     )
@@ -122,7 +240,6 @@ if audio_file is not None:
             st.session_state.time_y_range = None
             st.rerun()
 
-    # Downsample points for rendering speed
     step_t = max(1, len(t) // 3000)
     df_time = pd.DataFrame({"Zeit": t[::step_t], "Amplitude": data[::step_t]})
 
