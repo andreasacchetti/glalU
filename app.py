@@ -1,23 +1,26 @@
 import io
-import json
 import numpy as np
+import pandas as pd
 import scipy.fft as fft
 import soundfile as sf
 import streamlit as st
-import streamlit.components.v1 as components
+import altair as alt
 
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
 
+# 1. Audio Aufnahme
 audio_file = st.audio_input("Record your audio")
 
 if audio_file is not None:
     data, fs = sf.read(io.BytesIO(audio_file.getvalue()))
     if len(data.shape) > 1:
-        data = data[:, 0]
+        data = data[:, 0]  # Mono
     t = np.arange(len(data)) / fs
 
-    # 1. Signal im Zeitbereich
+    # ----------------------------------------------------
+    # 1. Time Domain Signal
+    # ----------------------------------------------------
     st.subheader("1. Signal im Zeitbereich")
     t_min, t_max = st.slider(
         "FFT-Analysebereich anpassen [s]:",
@@ -27,10 +30,29 @@ if audio_file is not None:
         step=0.01
     )
 
+    df_time = pd.DataFrame({"Zeit [s]": t, "Amplitude": data})
+    
+    # Downsample time plot if audio is long to ensure fast rendering
+    if len(df_time) > 10000:
+        step = len(df_time) // 10000
+        df_time_plot = df_time.iloc[::step]
+    else:
+        df_time_plot = df_time
+
+    chart_time = alt.Chart(df_time_plot).mark_line().encode(
+        x=alt.X("Zeit [s]:Q", scale=alt.Scale(zero=False)),
+        y=alt.Y("Amplitude:Q")
+    ).properties(height=200).interactive()
+
+    st.altair_chart(chart_time, use_container_width=True)
+
     mask = (t >= t_min) & (t <= t_max)
     xfft = data[mask]
     tfft = t[mask]
 
+    # ----------------------------------------------------
+    # 2. FFT Spectrum & Interactive Peak Selection
+    # ----------------------------------------------------
     if len(xfft) > 0:
         L = len(xfft)
         m = int(2 ** np.ceil(np.log2(L)))
@@ -43,8 +65,17 @@ if audio_file is not None:
         f = np.arange(len(P)) * fs / m
 
         st.subheader("2. FFT Spektrum & Peaks")
+        st.caption("💡 **Klicke direkt auf Peaks im Chart**, um Frequenzen auszuwählen, oder gib sie manuell unten ein.")
 
-        with st.expander("🎯 bis zu 10 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
+        # Prepare FFT DataFrame (capped at 5kHz)
+        valid_mask = f <= 5000
+        df_fft = pd.DataFrame({
+            "Frequenz [Hz]": f[valid_mask],
+            "|FFT|": P[valid_mask]
+        })
+
+        # Manual Number Inputs for precise tweaking
+        with st.expander("🎯 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
             cols = st.columns(5)
             user_freqs = []
             for i in range(10):
@@ -60,6 +91,7 @@ if audio_file is not None:
                     if val > 0:
                         user_freqs.append(val)
 
+        # Snap manual input frequencies to nearest local maximum within 50Hz
         snapped_peaks = []
         df_max = 50
         for u_freq in user_freqs:
@@ -70,87 +102,51 @@ if audio_file is not None:
                 exact_peak = float(u_freq)
             snapped_peaks.append(exact_peak)
 
-        valid_mask = f <= 5000
-        x_data = f[valid_mask].tolist()
-        y_data = P[valid_mask].tolist()
-        max_p = float(np.max(P[valid_mask])) if len(P[valid_mask]) > 0 else 1.0
+        # Build Interactive Altair FFT Plot
+        brush_selection = alt.selection_point(on="click", nearest=True, fields=["Frequenz [Hz]"])
 
-        # Build shapes and annotations with explicit y-coordinates
-        shapes = []
-        annotations = []
-        for peak_f in snapped_peaks:
-            shapes.append({
-                'type': 'line',
-                'x0': peak_f, 'x1': peak_f,
-                'y0': 0, 'y1': max_p * 1.1,
-                'line': {'color': 'red', 'width': 2, 'dash': 'dash'}
-            })
-            annotations.append({
-                'x': peak_f, 'y': max_p * 1.05,
-                'text': f"{peak_f:.1f} Hz",
-                'showarrow': False,
-                'font': {'color': 'red', 'size': 12}
-            })
+        base_spectrum = alt.Chart(df_fft).mark_line(color="#1f77b4").encode(
+            x=alt.X("Frequenz [Hz]:Q", scale=alt.Scale(zero=False)),
+            y=alt.Y("|FFT|:Q"),
+            tooltip=["Frequenz [Hz]", "|FFT|"]
+        ).properties(height=350)
 
-        plot_html = f"""
-        <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-        <div id="fft_chart" style="width:100%;height:380px;"></div>
-        <script>
-            (function() {{
-                var xData = {json.dumps(x_data)};
-                var yData = {json.dumps(y_data)};
-                var shapes = {json.dumps(shapes)};
-                var annotations = {json.dumps(annotations)};
+        # Clickable hit-targets on spectrum
+        points = alt.Chart(df_fft).mark_point(size=30, opacity=0).encode(
+            x="Frequenz [Hz]:Q",
+            y="|FFT|:Q"
+        ).add_params(brush_selection)
 
-                var trace = {{
-                    x: xData,
-                    y: yData,
-                    type: 'scatter',
-                    mode: 'lines',
-                    name: '|FFT|'
-                }};
-
-                var layout = {{
-                    margin: {{ l: 40, r: 20, t: 30, b: 40 }},
-                    xaxis: {{ title: 'Frequenz [Hz]' }},
-                    yaxis: {{ title: '|FFT|' }},
-                    shapes: shapes,
-                    annotations: annotations
-                }};
-
-                // Read cached zoom bounds
-                var savedX = localStorage.getItem('fft_x_range');
-                var savedY = localStorage.getItem('fft_y_range');
-
-                if (savedX) {{
-                    try {{ layout.xaxis.range = JSON.parse(savedX); }} catch(e) {{}}
-                }}
-                if (savedY) {{
-                    try {{ layout.yaxis.range = JSON.parse(savedY); }} catch(e) {{}}
-                }}
-
-                var chartDiv = document.getElementById('fft_chart');
-                Plotly.react(chartDiv, [trace], layout, {{responsive: true}});
-
-                // Save or reset zoom state on relayout
-                chartDiv.on('plotly_relayout', function(eventdata) {{
-                    if (eventdata['xaxis.range[0]'] !== undefined) {{
-                        localStorage.setItem('fft_x_range', JSON.stringify([eventdata['xaxis.range[0]'], eventdata['xaxis.range[1]']]));
-                        localStorage.setItem('fft_y_range', JSON.stringify([eventdata['yaxis.range[0]'], eventdata['yaxis.range[1]']]));
-                    }} else if (eventdata['xaxis.autorange'] || eventdata['autosize']) {{
-                        localStorage.removeItem('fft_x_range');
-                        localStorage.removeItem('fft_y_range');
-                    }}
-                }});
-            }})();
-        </script>
-        """
-
-        components.html(plot_html, height=400)
-
-        # 3. Fourier synthesis
+        # Red dashed lines for entered peaks
         if len(snapped_peaks) > 0:
-            st.subheader("3. Fourierkoeffizienten & Synthese")
+            df_peaks = pd.DataFrame({"Peak": snapped_peaks})
+            peak_lines = alt.Chart(df_peaks).mark_rule(
+                color="red", 
+                strokeDash=[4, 4], 
+                strokeWidth=2
+            ).encode(
+                x="Peak:Q"
+            )
+            fft_chart = (base_spectrum + points + peak_lines).interactive()
+        else:
+            fft_chart = (base_spectrum + points).interactive()
+
+        # Render Chart and catch click events
+        chart_event = st.altair_chart(fft_chart, use_container_width=True, on_select="rerun")
+
+        # Extract clicked frequency directly from chart interaction
+        if chart_event and "selection" in chart_event and "param_1" in chart_event["selection"]:
+            clicked_data = chart_event["selection"]["param_1"]
+            if clicked_data and len(clicked_data) > 0:
+                clicked_freq = clicked_data[0].get("Frequenz [Hz]")
+                if clicked_freq and clicked_freq not in snapped_peaks:
+                    snapped_peaks.append(clicked_freq)
+
+        # ----------------------------------------------------
+        # 3. Fourier Coefficients & Audio Synthesis
+        # ----------------------------------------------------
+        if len(snapped_peaks) > 0:
+            st.subheader("3. Fourierkoeffizienten & Audio-Synthese")
             col_left, col_right = st.columns([1, 1])
 
             a_coeffs, b_coeffs = [], []
@@ -167,10 +163,20 @@ if audio_file is not None:
                 export_str = "f(Hz)\ta_k\tb_k\n"
                 for f_val, a_val, b_val in zip(snapped_peaks, a_coeffs, b_coeffs):
                     export_str += f"{f_val:.2f}\t{a_val:.5f}\t{b_val:.5f}\n"
+
                 st.text_area("Berechnete Koeffizienten", export_str, height=160)
+                st.download_button(
+                    "💾 Fourierdaten exportieren (.txt)", 
+                    export_str, 
+                    "Fourierkoeffizienten.txt", 
+                    "text/plain"
+                )
 
             with col_right:
+                st.markdown("**🔊 Audio-Wiedergabe**")
                 st.audio(audio_file.getvalue(), format="audio/wav")
+                st.caption("Originale Audioaufnahme")
+
                 xsynth = np.zeros_like(tfft)
                 for i in range(len(snapped_peaks)):
                     xsynth += a_coeffs[i] * np.cos(2 * np.pi * snapped_peaks[i] * tfft)
@@ -182,3 +188,4 @@ if audio_file is not None:
                 synth_buffer = io.BytesIO()
                 sf.write(synth_buffer, xsynth, fs, format="WAV")
                 st.audio(synth_buffer.getvalue(), format="audio/wav")
+                st.caption(f"Synthetisiertes Signal ({len(snapped_peaks)} Peaks)")
