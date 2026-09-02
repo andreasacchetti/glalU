@@ -5,7 +5,6 @@ import pandas as pd
 import scipy.fft as fft
 import soundfile as sf
 import streamlit as st
-import streamlit.components.v1 as components
 import altair as alt
 
 st.set_page_config(layout="wide")
@@ -54,123 +53,14 @@ def reset_all_session_states():
 
 
 # ----------------------------------------------------
-# 10s Audio Recorder Component (Stoppable & Fast)
+# Native Audio Input Widget
 # ----------------------------------------------------
-COMPONENT_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-</head>
-<body style="margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif;">
-    <div style="display: flex; align-items: center; gap: 15px; background-color: #f0f2f6; padding: 12px 18px; border-radius: 8px;">
-        <button id="recordBtn" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #ff4b4b; color: white; cursor: pointer; font-weight: 600; font-size: 14px; transition: background-color 0.2s;">
-            🔴 Aufnahme starten (Max 10s)
-        </button>
-        <span id="status" style="font-size: 14px; color: #31333F; font-weight: 500;">Bereit</span>
-    </div>
+audio_file = st.audio_input("🔴 Audio aufnehmen")
 
-    <script>
-    function notifyStreamlit(type, data) {
-        window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data), "*");
-    }
+if audio_file is not None:
+    current_bytes = audio_file.read()
 
-    // Set fixed height for component container
-    notifyStreamlit("streamlit:setFrameHeight", { height: 70 });
-
-    let mediaRecorder;
-    let audioChunks = [];
-    let countdownInterval;
-    let autoStopTimeout;
-    let startTime;
-
-    const recordBtn = document.getElementById('recordBtn');
-    const status = document.getElementById('status');
-
-    function stopRecording() {
-        if (mediaRecorder && mediaRecorder.state === "recording") {
-            mediaRecorder.stop();
-        }
-    }
-
-    recordBtn.addEventListener('click', async () => {
-        // If actively recording, clicking again stops it immediately
-        if (mediaRecorder && mediaRecorder.state === "recording") {
-            stopRecording();
-            return;
-        }
-
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            mediaRecorder = new MediaRecorder(stream);
-            audioChunks = [];
-
-            mediaRecorder.ondataavailable = event => {
-                if (event.data.size > 0) audioChunks.push(event.data);
-            };
-
-            mediaRecorder.onstop = () => {
-                clearInterval(countdownInterval);
-                clearTimeout(autoStopTimeout);
-                status.innerText = "Verarbeite Aufnahme...";
-                recordBtn.innerText = "🔴 Aufnahme starten (Max 10s)";
-                recordBtn.style.backgroundColor = "#ff4b4b";
-
-                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                const reader = new FileReader();
-                reader.readAsDataURL(audioBlob);
-                reader.onloadend = () => {
-                    const base64Audio = reader.result.split(',')[1];
-                    notifyStreamlit("streamlit:setComponentValue", { value: base64Audio });
-                    status.innerText = "Aufnahme abgeschlossen!";
-                };
-
-                stream.getTracks().forEach(track => track.stop());
-            };
-
-            mediaRecorder.start();
-            recordBtn.innerText = "⏹️ Aufnahme stoppen";
-            recordBtn.style.backgroundColor = "#2b2b2b";
-
-            let remaining = 10;
-            status.innerText = `⏱️ Nimmt auf... (${remaining}s)`;
-
-            countdownInterval = setInterval(() => {
-                remaining--;
-                if (remaining > 0) {
-                    status.innerText = `⏱️ Nimmt auf... (${remaining}s)`;
-                } else {
-                    clearInterval(countdownInterval);
-                }
-            }, 1000);
-
-            autoStopTimeout = setTimeout(() => {
-                stopRecording();
-            }, 10000);
-
-        } catch (err) {
-            status.innerText = "❌ Mikrofonzugriff verweigert oder nicht unterstützt.";
-        }
-    });
-    </script>
-</body>
-</html>
-"""
-
-# Render custom component with fixed height
-audio_b64 = components.html(COMPONENT_HTML, height=70)
-
-# Alternative method to catch state payload cleanly from component frame
-if "audio_data" not in st.session_state:
-    st.session_state.audio_data = None
-
-if audio_b64 and audio_b64 != st.session_state.audio_data:
-    st.session_state.audio_data = audio_b64
-
-if st.session_state.audio_data:
-    current_bytes = base64.b64decode(st.session_state.audio_data)
-
-    # Reset state only when receiving a new recording length
+    # Reset state only when receiving a new recording
     if st.session_state.last_audio_len != len(current_bytes):
         st.session_state.last_audio_len = len(current_bytes)
         reset_all_session_states()
@@ -179,6 +69,11 @@ if st.session_state.audio_data:
     data, fs = sf.read(io.BytesIO(current_bytes))
     if len(data.shape) > 1:
         data = data[:, 0]
+
+    # Enforce maximum 10-second slice if longer
+    max_samples = int(10 * fs)
+    if len(data) > max_samples:
+        data = data[:max_samples]
 
     t = np.arange(len(data)) / fs
 
@@ -227,7 +122,7 @@ if st.session_state.audio_data:
             st.session_state.time_y_range = None
             st.rerun()
 
-    # Downsample points for fast rendering performance
+    # Downsample points for rendering speed
     step_t = max(1, len(t) // 3000)
     df_time = pd.DataFrame({"Zeit": t[::step_t], "Amplitude": data[::step_t]})
 
@@ -321,9 +216,7 @@ if st.session_state.audio_data:
         f_sub = f[valid_mask]
         P_sub = P[valid_mask]
         
-        # Downsample frequency points to speed up Altair rendering
         step_f = max(1, len(f_sub) // 3000)
-
         df_fft = pd.DataFrame({"Frequenz": f_sub[::step_f], "FFT": P_sub[::step_f]})
 
         x_scale_fft = alt.Scale(domain=st.session_state.fft_x_range, zero=False) if st.session_state.fft_x_range else alt.Scale(zero=False)
