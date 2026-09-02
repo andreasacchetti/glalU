@@ -3,19 +3,14 @@ import numpy as np
 import scipy.fft as fft
 import soundfile as sf
 import streamlit as st
-
-from bokeh.plotting import figure
-from bokeh.models import ColumnDataSource, Span, Label, CustomJS
-from streamlit_bokeh_events import streamlit_bokeh_events
+import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
 
-# Initialize persistent zoom memory
-if "fft_x_start" not in st.session_state:
-    st.session_state.fft_x_start = 0.0
-if "fft_x_end" not in st.session_state:
-    st.session_state.fft_x_end = 2000.0
+# Store zoom state dynamically
+if "fft_x_range" not in st.session_state:
+    st.session_state.fft_x_range = None
 
 audio_file = st.audio_input("Record your audio")
 
@@ -35,17 +30,23 @@ if audio_file is not None:
         step=0.01
     )
 
-    # Time Domain Bokeh Plot
+    # Time-Domain Chart
     step_t = max(1, len(t) // 5000)
-    p_time = figure(height=200, sizing_mode="stretch_width", x_axis_label="Zeit [s]", y_axis_label="Amplitude")
-    p_time.line(t[::step_t], data[::step_t], line_width=1, color="#1f77b4")
-    
-    # Highlight region span
-    time_span = Span(location=t_min, dimension='height', line_color='orange', line_width=2)
-    time_span2 = Span(location=t_max, dimension='height', line_color='orange', line_width=2)
-    p_time.add_layout(time_span)
-    p_time.add_layout(time_span2)
-    st.bokeh_chart(p_time)
+    fig_time = go.Figure()
+    fig_time.add_trace(go.Scatter(
+        x=t[::step_t], y=data[::step_t],
+        mode='lines', line=dict(color='#1f77b4', width=1),
+        name="Audio"
+    ))
+    fig_time.add_vline(x=t_min, line_width=2, line_color="orange")
+    fig_time.add_vline(x=t_max, line_width=2, line_color="orange")
+    fig_time.update_layout(
+        height=200,
+        margin=dict(l=20, r=20, t=20, b=30),
+        xaxis_title="Zeit [s]",
+        yaxis_title="Amplitude"
+    )
+    st.plotly_chart(fig_time, use_container_width=True)
 
     mask = (t >= t_min) & (t <= t_max)
     xfft = data[mask]
@@ -64,13 +65,14 @@ if audio_file is not None:
         f = np.arange(len(P)) * fs / m
 
         st.subheader("2. FFT Spektrum")
-        st.caption("🔍 **Nutze das Box-Zoom-Werkzeug** in der Bokeh-Toolbar (oben rechts am Graph), um ein Rechteck zu ziehen.")
+        st.caption("💡 **Box-Zoom:** Ziehe ein Rechteck mit der Maus zum Zoomen. **Doppelklick** setzt den Zoom vollständig zurück.")
 
         valid_mask = f <= 5000
         f_sub = f[valid_mask]
         P_sub = P[valid_mask]
         step_f = max(1, len(f_sub) // 5000)
 
+        # Peak inputs
         with st.expander("🎯 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
             cols = st.columns(5)
             user_freqs = []
@@ -97,51 +99,51 @@ if audio_file is not None:
                 exact_peak = float(u_freq)
             snapped_peaks.append(exact_peak)
 
-        # Build Bokeh Plot with Box-Zoom Tools
-        p_fft = figure(
-            height=380, 
-            sizing_mode="stretch_width",
-            title="FFT Spektrum",
-            x_axis_label="Frequenz [Hz]",
-            y_axis_label="|FFT|",
-            tools="pan,box_zoom,wheel_zoom,reset,save",
-            active_drag="box_zoom",
-            x_range=(st.session_state.fft_x_start, st.session_state.fft_x_end)
-        )
+        # Plotly Spectrum Construction
+        fig_fft = go.Figure()
+        fig_fft.add_trace(go.Scatter(
+            x=f_sub[::step_f], y=P_sub[::step_f],
+            mode='lines', line=dict(color='#1f77b4', width=1.5),
+            name="|FFT|"
+        ))
 
-        source_fft = ColumnDataSource(data=dict(x=f_sub[::step_f], y=P_sub[::step_f]))
-        p_fft.line('x', 'y', source=source_fft, line_width=1.5, color="#1f77b4")
-
-        # Draw Vertical Lines for Peak Inputs
         for peak_f in snapped_peaks:
-            vline = Span(location=peak_f, dimension='height', line_color='red', line_dash='dashed', line_width=2)
-            p_fft.add_layout(vline)
+            fig_fft.add_vline(x=peak_f, line_width=2, line_dash="dash", line_color="red")
 
-        # JavaScript callback to update session_state bounds when zoomed/panned
-        source_event = ColumnDataSource(data=dict(x_range=[]))
-        callback = CustomJS(args=dict(x_range=p_fft.x_range, source=source_event), code="""
-            var start = x_range.start;
-            var end = x_range.end;
-            source.data = {'x_range': [start, end]};
-            source.change.emit();
-        """)
-        p_fft.x_range.js_on_change('start', callback)
-        p_fft.x_range.js_on_change('end', callback)
-
-        # Render Bokeh chart with event tracking
-        res = streamlit_bokeh_events(
-            p_fft,
-            events="x_range",
-            key="fft_bokeh_chart",
-            refresh_on_update=False
+        layout_kwargs = dict(
+            height=380,
+            margin=dict(l=20, r=20, t=30, b=30),
+            xaxis_title="Frequenz [Hz]",
+            yaxis_title="|FFT|",
+            dragmode="select"
         )
 
-        # Preserve Zoom Range across inputs
-        if res and "x_range" in res:
-            bounds = res["x_range"]
-            if len(bounds) == 2:
-                st.session_state.fft_x_start = bounds[0]
-                st.session_state.fft_x_end = bounds[1]
+        # Apply saved range if set, otherwise auto-scale
+        if st.session_state.fft_x_range is not None:
+            layout_kwargs["xaxis"] = dict(range=st.session_state.fft_x_range)
+
+        fig_fft.update_layout(**layout_kwargs)
+
+        # Capture interaction events
+        chart_event = st.plotly_chart(
+            fig_fft, 
+            use_container_width=True, 
+            on_select="rerun",
+            selection_mode=["box"]
+        )
+
+        # Sync events back to state
+        if chart_event and "selection" in chart_event:
+            box_data = chart_event["selection"].get("box", [])
+            if len(box_data) > 0 and "x" in box_data[0]:
+                x_bounds = box_data[0]["x"]
+                if len(x_bounds) == 2:
+                    st.session_state.fft_x_range = [min(x_bounds), max(x_bounds)]
+            else:
+                # Double-click or selection cleared -> reset view
+                if st.session_state.fft_x_range is not None:
+                    st.session_state.fft_x_range = None
+                    st.rerun()
 
         # 3. Fourierkoeffizienten & Synthese
         if len(snapped_peaks) > 0:
