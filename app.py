@@ -82,9 +82,9 @@ if st.session_state.audio_bytes is not None:
         fig_fft.update_layout(
             xaxis_title="Frequenz [Hz]", yaxis_title="|FFT|",
             margin=dict(l=20, r=20, t=30, b=20), height=400,
-            dragmode="zoom"  # Box-zoom behavior on click & drag
+            dragmode="zoom",          # Enables click-and-drag box zoom
+            clickmode="event+select"  # Enables single-click point selection
         )
-
         # Streamlit 1.35+ Native Plotly Event Listener
         plotly_event = st.plotly_chart(
             fig_fft, 
