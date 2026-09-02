@@ -32,6 +32,7 @@ if st.session_state.audio_bytes is not None:
     # 1. Signal im Zeitbereich & Window Range
     # ----------------------------------------------------
     st.subheader("1. Signal im Zeitbereich & FFT-Bereich")
+    st.caption("💡 **Bedienung Plot:** Scrollen = Zoomen | Klicken & Ziehen = Verschieben (Pan)")
 
     t_min, t_max = st.slider(
         "FFT-Analysebereich anpassen [s]:",
@@ -41,7 +42,6 @@ if st.session_state.audio_bytes is not None:
         step=0.01
     )
 
-    # Prepare DataFrame for Time-Domain Plot
     # Downsample slightly if audio is long for smooth rendering
     step_time = max(1, len(data) // 5000)
     df_time = pd.DataFrame({
@@ -64,7 +64,8 @@ if st.session_state.audio_bytes is not None:
         x2="t_max:Q"
     )
 
-    st.altair_chart(time_chart + window_rect, use_container_width=True)
+    # .interactive() enables scroll zoom & drag pan
+    st.altair_chart((time_chart + window_rect).interactive(), use_container_width=True)
 
     # Slice the selected region for FFT calculation
     mask = (t >= t_min) & (t <= t_max)
@@ -84,7 +85,7 @@ if st.session_state.audio_bytes is not None:
         P[1:-1] *= 2
         f = np.arange(len(P)) * fs / m
 
-        # Filter plot up to 5kHz for clear visibility
+        # Filter plot up to 5kHz for default view
         valid_idx = f <= 5000
         step_fft = max(1, np.sum(valid_idx) // 4000)
         
@@ -110,7 +111,10 @@ if st.session_state.audio_bytes is not None:
             opacity=alt.condition(selection, alt.value(1.0), alt.value(0.0))
         ).add_params(selection)
 
-        event_data = st.altair_chart(fft_line + fft_points, on_select="rerun", use_container_width=True)
+        # .interactive() enables scroll zoom & drag pan on FFT spectrum
+        fft_chart_interactive = (fft_line + fft_points).interactive()
+
+        event_data = st.altair_chart(fft_chart_interactive, on_select="rerun", use_container_width=True)
 
         # Handle plot click
         if event_data and "selection" in event_data and event_data["selection"]:
