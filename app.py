@@ -45,7 +45,7 @@ if audio_file is not None:
     time_span2 = Span(location=t_max, dimension='height', line_color='orange', line_width=2)
     p_time.add_layout(time_span)
     p_time.add_layout(time_span2)
-    st.bokeh_chart(p_time, use_container_width=True)
+    st.bokeh_chart(p_time)
 
     mask = (t >= t_min) & (t <= t_max)
     xfft = data[mask]
