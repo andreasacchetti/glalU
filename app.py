@@ -8,7 +8,9 @@ import plotly.graph_objects as go
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
 
-# Initialize persistent zoom ranges for both plots
+# ----------------------------------------------------
+# Session State Initialization
+# ----------------------------------------------------
 if "time_x_range" not in st.session_state:
     st.session_state.time_x_range = None
 if "fft_x_range" not in st.session_state:
@@ -23,10 +25,23 @@ if audio_file is not None:
     t = np.arange(len(data)) / fs
 
     # ----------------------------------------------------
-    # 1. Signal im Zeitbereich (Zoom defines FFT window)
+    # 1. Signal im Zeitbereich
     # ----------------------------------------------------
     st.subheader("1. Signal im Zeitbereich")
-    st.caption("🔍 **Nutze den Plotly Box-Zoom:** Ziehe ein Rechteck, um den zeitlichen Analysebereich auszuwählen. Doppelklick setzt die Ansicht zurück.")
+
+    # Time Bounds Indicators
+    t_start_val = st.session_state.time_x_range[0] if st.session_state.time_x_range else float(t[0])
+    t_end_val = st.session_state.time_x_range[1] if st.session_state.time_x_range else float(t[-1])
+
+    col_t1, col_t2, col_t3 = st.columns([2, 2, 1])
+    with col_t1:
+        st.metric("⏱️ Startzeit (s)", f"{t_start_val:.4f} s")
+    with col_t2:
+        st.metric("⏱️ Endzeit (s)", f"{t_end_val:.4f} s")
+    with col_t3:
+        if st.button("🔄 Zeit-Zoom zurücksetzen", key="reset_time_zoom"):
+            st.session_state.time_x_range = None
+            st.rerun()
 
     step_t = max(1, len(t) // 5000)
     fig_time = go.Figure()
@@ -49,7 +64,7 @@ if audio_file is not None:
 
     fig_time.update_layout(**layout_time)
 
-    # Render Time Plot and catch zoom events
+    # Render Chart and catch layout changes
     event_time = st.plotly_chart(
         fig_time, 
         use_container_width=True, 
@@ -57,20 +72,17 @@ if audio_file is not None:
         key="time_plot"
     )
 
-    # Sync Time Zoom to Session State
+    # Update state only if a box zoom occurred
     if event_time and "selection" in event_time and "box" in event_time["selection"]:
         box_t = event_time["selection"]["box"]
         if len(box_t) > 0 and "x" in box_t[0]:
-            st.session_state.time_x_range = [min(box_t[0]["x"]), max(box_t[0]["x"])]
-            st.rerun()
+            x_min, x_max = min(box_t[0]["x"]), max(box_t[0]["x"])
+            if st.session_state.time_x_range != [x_min, x_max]:
+                st.session_state.time_x_range = [x_min, x_max]
+                st.rerun()
 
-    # Determine time slice from zoom or default to full audio
-    if st.session_state.time_x_range is not None:
-        t_min, t_max = st.session_state.time_x_range
-    else:
-        t_min, t_max = float(t[0]), float(t[-1])
-
-    mask = (t >= t_min) & (t <= t_max)
+    # Apply active slice mask
+    mask = (t >= t_start_val) & (t <= t_end_val)
     xfft = data[mask]
     tfft = t[mask]
 
@@ -89,14 +101,27 @@ if audio_file is not None:
         f = np.arange(len(P)) * fs / m
 
         st.subheader("2. FFT Spektrum")
-        st.caption("💡 **Box-Zoom:** Ziehe ein Rechteck zum Zoomen. **Doppelklick** setzt den Zoom auf das gesamte Spektrum zurück.")
 
         valid_mask = f <= 5000
         f_sub = f[valid_mask]
         P_sub = P[valid_mask]
         step_f = max(1, len(f_sub) // 5000)
 
-        # 10 Peak inputs
+        # FFT Bounds Indicators
+        f_start_val = st.session_state.fft_x_range[0] if st.session_state.fft_x_range else 0.0
+        f_end_val = st.session_state.fft_x_range[1] if st.session_state.fft_x_range else 2000.0
+
+        col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
+        with col_f1:
+            st.metric("📊 Min Frequenz (Hz)", f"{f_start_val:.2f} Hz")
+        with col_f2:
+            st.metric("📊 Max Frequenz (Hz)", f"{f_end_val:.2f} Hz")
+        with col_f3:
+            if st.button("🔄 FFT-Zoom zurücksetzen", key="reset_fft_zoom"):
+                st.session_state.fft_x_range = None
+                st.rerun()
+
+        # Peak Inputs (NO SNAP ROUNDING)
         with st.expander("🎯 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
             cols = st.columns(5)
             user_freqs = []
@@ -107,21 +132,11 @@ if audio_file is not None:
                         min_value=0.0, 
                         max_value=float(fs/2), 
                         value=0.0, 
-                        step=10.0,
+                        step=0.1,  # Exact decimal precision
                         key=f"peak_in_{i}"
                     )
-                    user_freqs.append(val)
-
-        snapped_peaks = []
-        df_max = 50
-        for u_freq in user_freqs:
-            if u_freq > 0:
-                idx_search = np.abs(f - u_freq) < df_max
-                if np.any(idx_search):
-                    exact_peak = float(f[idx_search][np.argmax(P[idx_search])])
-                else:
-                    exact_peak = float(u_freq)
-                snapped_peaks.append(exact_peak)
+                    if val > 0:
+                        user_freqs.append(val)
 
         # Plotly FFT Chart
         fig_fft = go.Figure()
@@ -131,12 +146,9 @@ if audio_file is not None:
             name="|FFT|"
         ))
 
-        # Add vertical peak lines (red dashed if active, hidden/transparent if 0)
-        for i in range(10):
-            val = user_freqs[i]
-            if val > 0:
-                peak_f = snapped_peaks[len([v for v in user_freqs[:i] if v > 0])]
-                fig_fft.add_vline(x=peak_f, line_width=2, line_dash="dash", line_color="red")
+        # Add vertical lines for exact user frequency inputs (NO forced rounding)
+        for peak_f in user_freqs:
+            fig_fft.add_vline(x=peak_f, line_width=2, line_dash="dash", line_color="red")
 
         layout_fft = dict(
             height=380,
@@ -151,7 +163,7 @@ if audio_file is not None:
 
         fig_fft.update_layout(**layout_fft)
 
-        # Render FFT Plot and catch zoom events
+        # Render FFT Chart and catch zoom events
         event_fft = st.plotly_chart(
             fig_fft, 
             use_container_width=True, 
@@ -159,23 +171,25 @@ if audio_file is not None:
             key="fft_plot"
         )
 
-        # Update persistent FFT range from selection box
+        # Update FFT range in state only when a new box zoom is drawn
         if event_fft and "selection" in event_fft and "box" in event_fft["selection"]:
             box_f = event_fft["selection"]["box"]
             if len(box_f) > 0 and "x" in box_f[0]:
-                st.session_state.fft_x_range = [min(box_f[0]["x"]), max(box_f[0]["x"])]
-                st.rerun()
+                x_min_f, x_max_f = min(box_f[0]["x"]), max(box_f[0]["x"])
+                if st.session_state.fft_x_range != [x_min_f, x_max_f]:
+                    st.session_state.fft_x_range = [x_min_f, x_max_f]
+                    st.rerun()
 
         # ----------------------------------------------------
         # 3. Fourierkoeffizienten & Audio-Synthese
         # ----------------------------------------------------
-        if len(snapped_peaks) > 0:
+        if len(user_freqs) > 0:
             st.subheader("3. Fourierkoeffizienten & Audio-Synthese")
             col_left, col_right = st.columns([1, 1])
 
             a_coeffs, b_coeffs = [], []
-            for sf_freq in snapped_peaks:
-                idx = np.abs(f - sf_freq) < 100
+            for u_freq in user_freqs:
+                idx = np.abs(f - u_freq) < (fs / m)  # Exact bin evaluation
                 if np.any(idx):
                     a_coeffs.append(float(np.max(ReZ[idx]) + np.min(ReZ[idx])))
                     b_coeffs.append(float(-(np.max(ImZ[idx]) + np.min(ImZ[idx]))))
@@ -185,7 +199,7 @@ if audio_file is not None:
 
             with col_left:
                 export_str = "f(Hz)\ta_k\tb_k\n"
-                for f_val, a_val, b_val in zip(snapped_peaks, a_coeffs, b_coeffs):
+                for f_val, a_val, b_val in zip(user_freqs, a_coeffs, b_coeffs):
                     export_str += f"{f_val:.2f}\t{a_val:.5f}\t{b_val:.5f}\n"
 
                 st.text_area("Berechnete Koeffizienten", export_str, height=160)
@@ -194,9 +208,9 @@ if audio_file is not None:
             with col_right:
                 st.audio(audio_file.getvalue(), format="audio/wav")
                 xsynth = np.zeros_like(tfft)
-                for i in range(len(snapped_peaks)):
-                    xsynth += a_coeffs[i] * np.cos(2 * np.pi * snapped_peaks[i] * tfft)
-                    xsynth += b_coeffs[i] * np.sin(2 * np.pi * snapped_peaks[i] * tfft)
+                for i in range(len(user_freqs)):
+                    xsynth += a_coeffs[i] * np.cos(2 * np.pi * user_freqs[i] * tfft)
+                    xsynth += b_coeffs[i] * np.sin(2 * np.pi * user_freqs[i] * tfft)
 
                 if np.max(np.abs(xsynth)) != 0:
                     xsynth *= (np.max(np.abs(xfft)) / np.max(np.abs(xsynth)))
