@@ -1,5 +1,7 @@
 import base64
 import io
+import os
+import tempfile
 import numpy as np
 import pandas as pd
 import scipy.fft as fft
@@ -54,11 +56,15 @@ def reset_all_session_states():
 
 
 # ----------------------------------------------------
-# Declare Custom Bidirectional Component
+# Declare Custom Bidirectional Component via Temp Dir
 # ----------------------------------------------------
-_recorder_component = components.declare_component(
-    "custom_10s_audio_recorder",
-    html="""
+COMPONENT_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+</head>
+<body style="margin: 0; padding: 0;">
     <div style="font-family: system-ui, -apple-system, sans-serif; display: flex; align-items: center; gap: 15px; background-color: #f0f2f6; padding: 12px 18px; border-radius: 8px;">
         <button id="recordBtn" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #ff4b4b; color: white; cursor: pointer; font-weight: 600; font-size: 14px; transition: background-color 0.2s;">
             🔴 Aufnahme starten (Max 10s)
@@ -141,7 +147,21 @@ _recorder_component = components.declare_component(
         }
     });
     </script>
-    """
+</body>
+</html>
+"""
+
+# Write HTML to a temp directory so declare_component can load it safely via path
+temp_dir = os.path.join(tempfile.gettempdir(), "streamlit_recorder_component")
+os.makedirs(temp_dir, exist_ok=True)
+index_path = os.path.join(temp_dir, "index.html")
+
+with open(index_path, "w", encoding="utf-8") as f:
+    f.write(COMPONENT_HTML)
+
+_recorder_component = components.declare_component(
+    "custom_10s_audio_recorder",
+    path=temp_dir
 )
 
 
