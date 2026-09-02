@@ -29,7 +29,7 @@ if audio_file is not None:
         step=0.01
     )
 
-    # Downsample for fast, stable rendering in Altair
+    # Downsample time domain data for stable rendering
     max_pts = 5000
     step = max(1, len(data) // max_pts)
     df_time = pd.DataFrame({
@@ -37,11 +37,22 @@ if audio_file is not None:
         "Amplitude": np.round(data[::step], 4)
     })
 
-    chart_time = alt.Chart(df_time).mark_line(color="#1f77b4").encode(
+    # Line chart for full time signal
+    line_time = alt.Chart(df_time).mark_line(color="#1f77b4").encode(
         x=alt.X("Zeit:Q", title="Zeit [s]"),
         y=alt.Y("Amplitude:Q", title="Amplitude")
-    ).properties(height=200, width="container").interactive()
+    )
 
+    # Highlight rectangle for selected time slice
+    df_window = pd.DataFrame([{"t0": t_min, "t1": t_max}])
+    highlight_window = alt.Chart(df_window).mark_rect(
+        color="orange", opacity=0.3
+    ).encode(
+        x="t0:Q",
+        x2="t1:Q"
+    )
+
+    chart_time = (line_time + highlight_window).properties(height=220).interactive()
     st.altair_chart(chart_time, use_container_width=True)
 
     mask = (t >= t_min) & (t <= t_max)
@@ -49,7 +60,7 @@ if audio_file is not None:
     tfft = t[mask]
 
     # ----------------------------------------------------
-    # 2. FFT Spektrum & Box-Zoom
+    # 2. FFT Spektrum
     # ----------------------------------------------------
     if len(xfft) > 0:
         L = len(xfft)
@@ -62,7 +73,8 @@ if audio_file is not None:
         P[1:-1] *= 2
         f = np.arange(len(P)) * fs / m
 
-        st.subheader("2. FFT Spektrum (Ziehe eine Box zum Zoomen)")
+        st.subheader("2. FFT Spektrum")
+        st.caption("💡 **Zoom & Pan:** Nutze Mausrad/Touchpad. Für Box-Zoom **Shift-Taste gedrückt halten und Rechteck ziehen**.")
 
         valid_mask = f <= 5000
         f_sub = f[valid_mask]
@@ -100,25 +112,14 @@ if audio_file is not None:
                 exact_peak = float(u_freq)
             snapped_peaks.append(exact_peak)
 
-        # Box-Zoom via Interval Selection
-        box_brush = alt.selection_interval(encodings=['x', 'y'])
-
-        # Main detail plot that zooms when box is drawn
-        base = alt.Chart(df_fft).mark_line(color="#1f77b4").encode(
-            x=alt.X("Frequenz:Q", title="Frequenz [Hz]", scale=alt.Scale(zero=False)),
-            y=alt.Y("Magnitude:Q", title="|FFT|", scale=alt.Scale(zero=False)),
+        # Main spectrum line
+        base_fft = alt.Chart(df_fft).mark_line(color="#1f77b4").encode(
+            x=alt.X("Frequenz:Q", title="Frequenz [Hz]"),
+            y=alt.Y("Magnitude:Q", title="|FFT|"),
             tooltip=["Frequenz", "Magnitude"]
-        ).properties(height=380, width="container")
-
-        # Overview minimap to draw the box zoom region
-        overview = base.properties(height=100).add_params(box_brush)
-        
-        # Detail plot zoomed into the selection
-        detail = base.encode(
-            x=alt.X("Frequenz:Q", scale=alt.Scale(domain=box_brush.empty())),
-            y=alt.Y("Magnitude:Q", scale=alt.Scale(domain=box_brush.empty()))
         )
 
+        # Red vertical dashed rules for entered peaks
         if len(snapped_peaks) > 0:
             df_peaks = pd.DataFrame({"Peak": snapped_peaks})
             peak_rules = alt.Chart(df_peaks).mark_rule(
@@ -126,9 +127,9 @@ if audio_file is not None:
                 strokeDash=[4, 4], 
                 strokeWidth=2
             ).encode(x="Peak:Q")
-            final_fft = (detail + peak_rules) & overview
+            final_fft = (base_fft + peak_rules).properties(height=380).interactive(bind_y=True)
         else:
-            final_fft = detail & overview
+            final_fft = base_fft.properties(height=380).interactive(bind_y=True)
 
         st.altair_chart(final_fft, use_container_width=True)
 
