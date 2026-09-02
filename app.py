@@ -9,37 +9,51 @@ from streamlit_plotly_events import plotly_events
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse (Interactive)")
 
-# Initialize session state for storing selected peak frequencies
+# Initialize session state for persistent data across reruns
 if "selected_peaks" not in st.session_state:
     st.session_state.selected_peaks = []
+if "audio_data" not in st.session_state:
+    st.session_state.audio_data = None
+if "fs" not in st.session_state:
+    st.session_state.fs = None
 
-# Clear peaks if a new recording is made
+# Audio Recording Input
 audio_file = st.audio_input("Record your audio")
 
-if audio_file:
-    # Read audio signal
+# Store new recording into session state if available
+if audio_file is not None:
     data, fs = sf.read(io.BytesIO(audio_file.getvalue()))
     if len(data.shape) > 1:
         data = data[:, 0]  # Mono channel
+    st.session_state.audio_data = data
+    st.session_state.fs = fs
+    # Reset peaks on fresh recording
+    st.session_state.selected_peaks = []
+
+# Continue only if we have stored audio data
+if st.session_state.audio_data is not None:
+    data = st.session_state.audio_data
+    fs = st.session_state.fs
     t = np.arange(len(data)) / fs
 
     # ----------------------------------------------------
     # 1. Signal im Zeitbereich & Window Range
     # ----------------------------------------------------
     st.subheader("1. Signal im Zeitbereich & FFT-Bereich")
-    
+
     t_min, t_max = st.slider(
         "FFT-Analysebereich anpassen [s]:",
         min_value=0.0,
         max_value=float(t[-1]),
         value=(0.0, float(t[-1])),
-        step=0.01
+        step=0.01,
+        key="time_slider"
     )
 
     mask = (t >= t_min) & (t <= t_max)
     xfft = data[mask]
 
-    # Plot Signal with shaded FFT window
+    # Time domain plot
     fig_signal = go.Figure()
     fig_signal.add_trace(go.Scatter(x=t, y=data, mode="lines", name="Audio Signal"))
     fig_signal.add_vrect(
@@ -48,7 +62,7 @@ if audio_file:
     )
     fig_signal.update_layout(
         xaxis_title="Zeit [s]", yaxis_title="Amplitude",
-        margin=dict(l=20, r=20, t=30, b=20), height=300
+        margin=dict(l=20, r=20, t=30, b=20), height=250
     )
     st.plotly_chart(fig_signal, use_container_width=True)
 
@@ -66,10 +80,9 @@ if audio_file:
         P[1:-1] *= 2
         f = np.arange(len(P)) * fs / m
 
-        st.subheader("2. FFT Spektrum — Klicke direkt in den Plot, um Peaks auszuwählen")
-        st.info("💡 **Tipp:** Nutze die Plotly-Zoomwerkzeuge (Oben rechts im Plot), um Frequenzen zu vergrößern. Klicke auf eine Spitze, um den Peak hinzuzufügen.")
+        st.subheader("2. FFT Spektrum — Klicke auf den Plot, um Peaks auszuwählen")
 
-        # Build Interactive Plotly Spectrum
+        # Interactive Plotly Spectrum
         fig_fft = go.Figure()
         fig_fft.add_trace(
             go.Scatter(
@@ -78,10 +91,9 @@ if audio_file:
             )
         )
 
-        # Highlight currently selected peaks on the chart
+        # Draw existing markers for selected peaks
         if st.session_state.selected_peaks:
             peak_x = st.session_state.selected_peaks
-            # Match nearest Y values for visualization markers
             peak_y = [P[np.argmin(np.abs(f - px))] for px in peak_x]
             fig_fft.add_trace(
                 go.Scatter(
@@ -94,41 +106,38 @@ if audio_file:
         fig_fft.update_layout(
             xaxis_title="Frequenz [Hz]", yaxis_title="|FFT|",
             margin=dict(l=20, r=20, t=30, b=20), height=450,
-            xaxis=dict(range=[0, 5000])  # Default zoom up to 5kHz for better visibility
+            xaxis=dict(range=[0, 5000])  # Default view 0-5kHz
         )
 
-        # Capture click events directly from the plot canvas
+        # Capture clicks on the chart
         selected_points = plotly_events(fig_fft, click_event=True, key="fft_plot")
 
-        # Process new click
         if selected_points:
             clicked_freq = selected_points[0]["x"]
             
-            # Snap to local peak within df_max interval (similar to your script's logic)
-            df_max = 50  # Hz search window
+            # Snap to highest peak within 50 Hz of the click
+            df_max = 50  
             idx_search = np.abs(f - clicked_freq) < df_max
             if np.any(idx_search):
                 local_f = f[idx_search]
                 local_P = P[idx_search]
-                exact_peak_f = local_f[np.argmax(local_P)]
+                exact_peak_f = float(local_f[np.argmax(local_P)])
             else:
-                exact_peak_f = clicked_freq
+                exact_peak_f = float(clicked_freq)
 
-            # Avoid duplicates
+            # Prevent double-clicking the same peak
             if not any(np.isclose(exact_peak_f, existing, atol=1.0) for existing in st.session_state.selected_peaks):
                 st.session_state.selected_peaks.append(exact_peak_f)
                 st.rerun()
 
         # ----------------------------------------------------
-        # 3. Fourierkoeffizienten & Export Table
+        # 3. Fourier Coefficients Output
         # ----------------------------------------------------
         st.subheader("3. Ausgewählte Peaks & Fourierkoeffizienten")
 
-        col_reset, col_space = st.columns([1, 5])
-        with col_reset:
-            if st.button("🗑️ Peaks zurücksetzen"):
-                st.session_state.selected_peaks = []
-                st.rerun()
+        if st.button("🗑️ Peaks zurücksetzen"):
+            st.session_state.selected_peaks = []
+            st.rerun()
 
         if st.session_state.selected_peaks:
             df_max = 100
@@ -150,12 +159,12 @@ if audio_file:
                     a_coeffs.append(0.0)
                     b_coeffs.append(0.0)
 
-            # Export String Generation
+            # Build text export format
             export_str = "f(Hz)\ta_k\tb_k\n"
             for f_val, a_val, b_val in zip(selected_freqs, a_coeffs, b_coeffs):
                 export_str += f"{f_val:.2f}\t{a_val:.5f}\t{b_val:.5f}\n"
 
-            st.text_area("Fourierkoeffizienten", export_str, height=180)
+            st.text_area("Fourierkoeffizienten", export_str, height=150)
 
             st.download_button(
                 label="💾 Fourierdaten exportieren (.txt)",
