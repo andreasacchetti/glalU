@@ -40,7 +40,8 @@ if audio_file is not None:
     fig_time.update_layout(
         xaxis_title="Zeit [s]", yaxis_title="Amplitude",
         margin=dict(l=20, r=20, t=30, b=20), height=220,
-        dragmode="zoom"
+        dragmode="zoom",
+        uirevision=True  # Preserves time-domain zoom state
     )
     st.plotly_chart(fig_time, use_container_width=True)
 
@@ -63,14 +64,13 @@ if audio_file is not None:
         f = np.arange(len(P)) * fs / m
 
         st.subheader("2. FFT Spektrum & Peaks")
-        st.caption("💡 Trage unten bis zu 10 Peak-Frequenzen ein. Sie werden als rote vertikale Linien im Plot dargestellt.")
+        st.caption("💡 Trage unten bis zu 10 Peak-Frequenzen ein. Die gezoomte Ansicht bleibt beim Ändern erhalten.")
 
-        # Sidebar or expander for clean inputs
+        # 10 manual input boxes
         with st.expander("🎯 bis zu 10 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
             cols = st.columns(5)
             user_freqs = []
             
-            # 10 manual input boxes (2 rows of 5)
             for i in range(10):
                 with cols[i % 5]:
                     val = st.number_input(
@@ -114,7 +114,8 @@ if audio_file is not None:
         fig_fft.update_layout(
             xaxis_title="Frequenz [Hz]", yaxis_title="|FFT|",
             margin=dict(l=20, r=20, t=30, b=20), height=380,
-            dragmode="zoom"
+            dragmode="zoom",
+            uirevision=True  # Preserves FFT zoom state during reruns
         )
         st.plotly_chart(fig_fft, use_container_width=True)
 
@@ -154,11 +155,9 @@ if audio_file is not None:
             with col_right:
                 st.markdown("**🔊 Audio-Wiedergabe**")
                 
-                # 1. Playback Original Audio
                 st.audio(audio_file.getvalue(), format="audio/wav")
                 st.caption("Originale Audioaufnahme")
 
-                # 2. Compute & Playback Synthesized Audio
                 xsynth = np.zeros_like(tfft)
                 for i in range(len(snapped_peaks)):
                     xsynth += a_coeffs[i] * np.cos(2 * np.pi * snapped_peaks[i] * tfft)
