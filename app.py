@@ -1,16 +1,13 @@
 import io
+import json
 import numpy as np
 import scipy.fft as fft
 import soundfile as sf
 import streamlit as st
-import plotly.graph_objects as go
+import streamlit.components.v1 as components
 
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
-
-# Initialize persistent zoom memory in session state
-if "zoom_x_range" not in st.session_state:
-    st.session_state.zoom_x_range = None
 
 audio_file = st.audio_input("Record your audio")
 
@@ -20,7 +17,7 @@ if audio_file is not None:
         data = data[:, 0]
     t = np.arange(len(data)) / fs
 
-    # 1. Zeitbereich Signal
+    # 1. Signal im Zeitbereich
     st.subheader("1. Signal im Zeitbereich")
     t_min, t_max = st.slider(
         "FFT-Analysebereich anpassen [s]:",
@@ -29,12 +26,6 @@ if audio_file is not None:
         value=(0.0, float(t[-1])),
         step=0.01
     )
-
-    fig_time = go.Figure()
-    fig_time.add_trace(go.Scatter(x=t, y=data, mode="lines"))
-    fig_time.add_vrect(x0=t_min, x1=t_max, fillcolor="orange", opacity=0.3, layer="below")
-    fig_time.update_layout(xaxis_title="Zeit [s]", yaxis_title="Amplitude", height=220, margin=dict(l=20, r=20, t=20, b=20))
-    st.plotly_chart(fig_time, use_container_width=True)
 
     mask = (t >= t_min) & (t <= t_max)
     xfft = data[mask]
@@ -51,9 +42,9 @@ if audio_file is not None:
         P[1:-1] *= 2
         f = np.arange(len(P)) * fs / m
 
-        st.subheader("2. FFT Spektrum")
+        st.subheader("2. FFT Spektrum & Peaks")
 
-        # 10 Peak Eingabefelder
+        # Peak input fields
         with st.expander("🎯 bis zu 10 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
             cols = st.columns(5)
             user_freqs = []
@@ -80,43 +71,82 @@ if audio_file is not None:
                 exact_peak = float(u_freq)
             snapped_peaks.append(exact_peak)
 
+        # Prepare Plotly Data Arrays for raw JS rendering
         valid_mask = f <= 5000
-        fig_fft = go.Figure()
-        fig_fft.add_trace(go.Scatter(x=f[valid_mask], y=P[valid_mask], mode="lines", name="|FFT|"))
+        x_data = f[valid_mask].tolist()
+        y_data = P[valid_mask].tolist()
 
+        # Build vertical peak lines shapes for Plotly JS
+        shapes = []
+        annotations = []
         for peak_f in snapped_peaks:
-            fig_fft.add_vline(x=peak_f, line_width=2, line_dash="dash", line_color="red")
+            shapes.append({
+                'type': 'line',
+                'x0': peak_f, 'x1': peak_f,
+                'y0': 0, 'y1': 1, 'yref': 'paper',
+                'line': {'color': 'red', 'width': 2, 'dash': 'dash'}
+            })
+            annotations.append({
+                'x': peak_f, 'y': 1, 'yref': 'paper',
+                'text': f"{peak_f:.1f} Hz", 'showarrow': False,
+                'font': {'color': 'red'}
+            })
 
-        layout_kwargs = dict(
-            xaxis_title="Frequenz [Hz]", 
-            yaxis_title="|FFT|",
-            margin=dict(l=20, r=20, t=20, b=20), 
-            height=380
-        )
+        # Inject pure JavaScript Plotly Component with LocalStorage persistence
+        plot_html = f"""
+        <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+        <div id="fft_chart" style="width:100%;height:380px;"></div>
+        <script>
+            var xData = {json.dumps(x_data)};
+            var yData = {json.dumps(y_data)};
+            var shapes = {json.dumps(shapes)};
+            var annotations = {json.dumps(annotations)};
 
-        # Restore memory of the last zoom state if available
-        if st.session_state.zoom_x_range is not None:
-            layout_kwargs["xaxis"] = dict(range=st.session_state.zoom_x_range)
+            var trace = {{
+                x: xData,
+                y: yData,
+                type: 'scatter',
+                mode: 'lines',
+                name: '|FFT|'
+            }};
 
-        fig_fft.update_layout(**layout_kwargs)
+            var layout = {{
+                margin: {{ l: 40, r: 20, t: 20, b: 40 }},
+                xaxis: {{ title: 'Frequenz [Hz]' }},
+                yaxis: {{ title: '|FFT|' }},
+                shapes: shapes,
+                annotations: annotations
+            }};
 
-        # Render chart and register zoom state changes
-        event_data = st.plotly_chart(
-            fig_fft, 
-            use_container_width=True, 
-            key="fft_spectrum", 
-            on_select="rerun"
-        )
+            // Check if browser has stored zoom coordinates
+            var savedX = localStorage.getItem('fft_x_range');
+            var savedY = localStorage.getItem('fft_y_range');
 
-        # Capture zoom/pan bounds whenever you zoom in Plotly
-        if event_data and "relayout" in event_data:
-            relayout = event_data["relayout"]
-            if "xaxis.range[0]" in relayout and "xaxis.range[1]" in relayout:
-                st.session_state.zoom_x_range = [relayout["xaxis.range[0]"], relayout["xaxis.range[1]"]]
-            elif "xaxis.autorange" in relayout:  # Double click to reset
-                st.session_state.zoom_x_range = None
+            if (savedX && savedY) {{
+                layout.xaxis.range = JSON.parse(savedX);
+                layout.yaxis.range = JSON.parse(savedY);
+            }}
 
-        # 3. Audio & Koeffizienten
+            var chartDiv = document.getElementById('fft_chart');
+            Plotly.newPlot(chartDiv, [trace], layout, {{responsive: true}});
+
+            // Capture zoom/pan events and save directly to browser memory
+            chartDiv.on('plotly_relayout', function(eventdata){{
+                if(eventdata['xaxis.range[0]'] !== undefined) {{
+                    localStorage.setItem('fft_x_range', JSON.stringify([eventdata['xaxis.range[0]'], eventdata['xaxis.range[1]']]));
+                    localStorage.setItem('fft_y_range', JSON.stringify([eventdata['yaxis.range[0]'], eventdata['yaxis.range[1]']]));
+                }} else if(eventdata['xaxis.autorange'] === true) {{
+                    // Reset zoom on double-click
+                    localStorage.removeItem('fft_x_range');
+                    localStorage.removeItem('fft_y_range');
+                }}
+            }});
+        </script>
+        """
+
+        components.html(plot_html, height=400)
+
+        # 3. Fourier synthesis
         if len(snapped_peaks) > 0:
             st.subheader("3. Fourierkoeffizienten & Synthese")
             col_left, col_right = st.columns([1, 1])
