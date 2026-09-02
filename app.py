@@ -1,76 +1,141 @@
-import streamlit as st
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.fft import fft
 import io
+import numpy as np
+import plotly.graph_objects as go
+import scipy.fft as fft
 import soundfile as sf
+import streamlit as st
+from streamlit_plotly_events import plotly_events
 
-st.title("Audio Fourier Analyse")
+st.set_page_config(layout="wide")
+st.title("Audio Fourier Analyse (Interactive)")
 
-# 1. Audio Recording (Handles Browser Microphone Permission & Cloud Upload)
+# Initialize session state for storing selected peak frequencies
+if "selected_peaks" not in st.session_state:
+    st.session_state.selected_peaks = []
+
+# Clear peaks if a new recording is made
 audio_file = st.audio_input("Record your audio")
 
 if audio_file:
-    # Read raw audio bytes into Numpy array
+    # Read audio signal
     data, fs = sf.read(io.BytesIO(audio_file.getvalue()))
     if len(data.shape) > 1:
         data = data[:, 0]  # Mono channel
-        
     t = np.arange(len(data)) / fs
 
-    # 2. Time-Domain Signal Plot
-    st.subheader("1. Signal im Zeitbereich")
-    fig, ax = plt.subplots(figsize=(10, 3))
-    ax.plot(t, data)
-    ax.set_xlabel("Zeit [s]")
-    ax.set_ylabel("Amplitude")
-    st.pyplot(fig)
-
-    # 3. FFT Time Window Selection (Replaces ginput selection)
-    st.subheader("2. FFT Analysebereich auswählen")
-    t_min, t_max = st.slider("Zeitfenster [s]", 0.0, float(t[-1]), (0.0, float(t[-1])))
+    # ----------------------------------------------------
+    # 1. Signal im Zeitbereich & Window Range
+    # ----------------------------------------------------
+    st.subheader("1. Signal im Zeitbereich & FFT-Bereich")
     
+    t_min, t_max = st.slider(
+        "FFT-Analysebereich anpassen [s]:",
+        min_value=0.0,
+        max_value=float(t[-1]),
+        value=(0.0, float(t[-1])),
+        step=0.01
+    )
+
     mask = (t >= t_min) & (t <= t_max)
     xfft = data[mask]
-    
+
+    # Plot Signal with shaded FFT window
+    fig_signal = go.Figure()
+    fig_signal.add_trace(go.Scatter(x=t, y=data, mode="lines", name="Audio Signal"))
+    fig_signal.add_vrect(
+        x0=t_min, x1=t_max, fillcolor="LightSalmon", opacity=0.3,
+        layer="below", line_width=0, annotation_text="FFT Window"
+    )
+    fig_signal.update_layout(
+        xaxis_title="Zeit [s]", yaxis_title="Amplitude",
+        margin=dict(l=20, r=20, t=30, b=20), height=300
+    )
+    st.plotly_chart(fig_signal, use_container_width=True)
+
+    # ----------------------------------------------------
+    # 2. FFT Calculation & Interactive Peak Selection
+    # ----------------------------------------------------
     if len(xfft) > 0:
-        # FFT Computation
         L = len(xfft)
-        m = int(2**np.ceil(np.log2(L)))
-        Z = fft(xfft, m)
-        
-        ReZ = np.real(Z[:L//2+1])
-        ImZ = np.imag(Z[:L//2+1])
-        P = np.abs(Z / L)[:L//2+1]
+        m = int(2 ** np.ceil(np.log2(L)))
+        Z = fft.fft(xfft, m)
+
+        ReZ = np.real(Z[: L // 2 + 1])
+        ImZ = np.imag(Z[: L // 2 + 1])
+        P = np.abs(Z / L)[: L // 2 + 1]
         P[1:-1] *= 2
         f = np.arange(len(P)) * fs / m
 
-        # 4. Plot FFT Spectrum
-        st.subheader("3. FFT Spektrum")
-        fig2, ax2 = plt.subplots(2, 1, figsize=(10, 6))
-        ax2[0].plot(f, P)
-        ax2[0].set_title("Betragsspektrum (linear)")
-        ax2[0].set_xlabel("Frequenz [Hz]")
-        
-        ax2[1].semilogy(f, P)
-        ax2[1].set_title("Betragsspektrum (logarithmisch)")
-        ax2[1].set_xlabel("Frequenz [Hz]")
-        plt.tight_layout()
-        st.pyplot(fig2)
+        st.subheader("2. FFT Spektrum — Klicke direkt in den Plot, um Peaks auszuwählen")
+        st.info("💡 **Tipp:** Nutze die Plotly-Zoomwerkzeuge (Oben rechts im Plot), um Frequenzen zu vergrößern. Klicke auf eine Spitze, um den Peak hinzuzufügen.")
 
-        # 5. Peak Frequency Selection (Replaces Matplotlib ginput)
-        st.subheader("4. Peaks auswählen & Fourierkoeffizienten")
-        # Find local maxima to present as selectable peaks
-        peak_indices = np.where((P[1:-1] > P[:-2]) & (P[1:-1] > P[2:]))[0] + 1
-        top_freqs = np.round(f[peak_indices], 2)
-        
-        selected_freqs = st.multiselect("Select Peak Frequencies [Hz]", top_freqs)
+        # Build Interactive Plotly Spectrum
+        fig_fft = go.Figure()
+        fig_fft.add_trace(
+            go.Scatter(
+                x=f, y=P, mode="lines", name="|FFT|",
+                hovertemplate="Frequenz: %{x:.2f} Hz<br>Betrag: %{y:.5f}<extra></extra>"
+            )
+        )
 
-        if selected_freqs:
+        # Highlight currently selected peaks on the chart
+        if st.session_state.selected_peaks:
+            peak_x = st.session_state.selected_peaks
+            # Match nearest Y values for visualization markers
+            peak_y = [P[np.argmin(np.abs(f - px))] for px in peak_x]
+            fig_fft.add_trace(
+                go.Scatter(
+                    x=peak_x, y=peak_y, mode="markers",
+                    marker=dict(color="red", size=10, symbol="x"),
+                    name="Ausgewählte Peaks"
+                )
+            )
+
+        fig_fft.update_layout(
+            xaxis_title="Frequenz [Hz]", yaxis_title="|FFT|",
+            margin=dict(l=20, r=20, t=30, b=20), height=450,
+            xaxis=dict(range=[0, 5000])  # Default zoom up to 5kHz for better visibility
+        )
+
+        # Capture click events directly from the plot canvas
+        selected_points = plotly_events(fig_fft, click_event=True, key="fft_plot")
+
+        # Process new click
+        if selected_points:
+            clicked_freq = selected_points[0]["x"]
+            
+            # Snap to local peak within df_max interval (similar to your script's logic)
+            df_max = 50  # Hz search window
+            idx_search = np.abs(f - clicked_freq) < df_max
+            if np.any(idx_search):
+                local_f = f[idx_search]
+                local_P = P[idx_search]
+                exact_peak_f = local_f[np.argmax(local_P)]
+            else:
+                exact_peak_f = clicked_freq
+
+            # Avoid duplicates
+            if not any(np.isclose(exact_peak_f, existing, atol=1.0) for existing in st.session_state.selected_peaks):
+                st.session_state.selected_peaks.append(exact_peak_f)
+                st.rerun()
+
+        # ----------------------------------------------------
+        # 3. Fourierkoeffizienten & Export Table
+        # ----------------------------------------------------
+        st.subheader("3. Ausgewählte Peaks & Fourierkoeffizienten")
+
+        col_reset, col_space = st.columns([1, 5])
+        with col_reset:
+            if st.button("🗑️ Peaks zurücksetzen"):
+                st.session_state.selected_peaks = []
+                st.rerun()
+
+        if st.session_state.selected_peaks:
             df_max = 100
+            selected_freqs = sorted(st.session_state.selected_peaks)
             a_coeffs = []
             b_coeffs = []
-            
+
             for sf_freq in selected_freqs:
                 idx = np.abs(f - sf_freq) < df_max
                 if np.any(idx):
@@ -78,24 +143,23 @@ if audio_file:
                     Re_minus = np.min(ReZ[idx])
                     Im_plus = np.max(ImZ[idx])
                     Im_minus = np.min(ImZ[idx])
-                    
+
                     a_coeffs.append(Re_plus + Re_minus)
                     b_coeffs.append(-(Im_plus + Im_minus))
                 else:
-                    a_coeffs.append(0)
-                    b_coeffs.append(0)
+                    a_coeffs.append(0.0)
+                    b_coeffs.append(0.0)
 
-            # Export Data View & CSV Download
+            # Export String Generation
             export_str = "f(Hz)\ta_k\tb_k\n"
             for f_val, a_val, b_val in zip(selected_freqs, a_coeffs, b_coeffs):
-                export_str += f"{f_val}\t{a_val:.5f}\t{b_val:.5f}\n"
-                
-            st.text_area("Fourierkoeffizienten", export_str, height=150)
-            
-            # Browser File Download (Replaces local filedialog save)
+                export_str += f"{f_val:.2f}\t{a_val:.5f}\t{b_val:.5f}\n"
+
+            st.text_area("Fourierkoeffizienten", export_str, height=180)
+
             st.download_button(
-                label="💾 Fourierdaten exportieren",
+                label="💾 Fourierdaten exportieren (.txt)",
                 data=export_str,
                 file_name="Fourierkoeffizienten.txt",
-                mime="text/plain"
+                mime="text/plain",
             )
