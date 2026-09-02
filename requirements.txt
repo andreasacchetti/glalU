@@ -1,5 +1,6 @@
 streamlit
 numpy
-matplotlib
 scipy
 soundfile
+plotly
+streamlit-plotly-events
