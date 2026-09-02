@@ -10,7 +10,7 @@ st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
 
 # ----------------------------------------------------
-# Session State Setup (Coordinates Memory)
+# Session State Setup (Zoom Bounds Memory)
 # ----------------------------------------------------
 if "time_x_range" not in st.session_state:
     st.session_state.time_x_range = None
@@ -31,7 +31,7 @@ if audio_file is not None:
     t = np.arange(len(data)) / fs
 
     # ----------------------------------------------------
-    # 1. Signal im Zeitbereich (Altair Box-Zoom)
+    # 1. Signal im Zeitbereich (Altair Box Selection)
     # ----------------------------------------------------
     st.subheader("1. Signal im Zeitbereich")
 
@@ -41,7 +41,7 @@ if audio_file is not None:
     y_time_min = st.session_state.time_y_range[0] if st.session_state.time_y_range else float(np.min(data))
     y_time_max = st.session_state.time_y_range[1] if st.session_state.time_y_range else float(np.max(data))
 
-    # Indicators & Dedicated Reset Button
+    # Metrics & Dedicated Reset Button
     col_t1, col_t2, col_t3, col_t4, col_t_btn = st.columns([2, 2, 2, 2, 2])
     with col_t1:
         st.metric("⏱️ Startzeit (s)", f"{t_start_val:.4f} s")
@@ -62,11 +62,11 @@ if audio_file is not None:
     step_t = max(1, len(t) // 5000)
     df_time = pd.DataFrame({"Zeit": t[::step_t], "Amplitude": data[::step_t]})
 
-    # Explicit Altair Box-Selection interval
-    brush_time = alt.selection_interval(encodings=["x", "y"], name="time_brush")
+    # Define explicit scales without zero-snapping distortion
+    x_scale_time = alt.Scale(domain=st.session_state.time_x_range, zero=False) if st.session_state.time_x_range else alt.Scale(zero=False)
+    y_scale_time = alt.Scale(domain=st.session_state.time_y_range, zero=False) if st.session_state.time_y_range else alt.Scale(zero=False)
 
-    x_scale_time = alt.Scale(domain=st.session_state.time_x_range) if st.session_state.time_x_range else alt.Scale()
-    y_scale_time = alt.Scale(domain=st.session_state.time_y_range) if st.session_state.time_y_range else alt.Scale()
+    brush_time = alt.selection_interval(encodings=["x", "y"], name="time_brush")
 
     chart_time = (
         alt.Chart(df_time)
@@ -76,26 +76,32 @@ if audio_file is not None:
             y=alt.Y("Amplitude:Q", title="Amplitude", scale=y_scale_time)
         )
         .add_params(brush_time)
-        .properties(height=220)
+        .properties(height=240)
     )
 
     event_time = st.altair_chart(chart_time, use_container_width=True, on_select="rerun", key="time_chart")
 
-    # Capture and retain box selection coordinates
+    # Capture box selection bounds into session state
     if event_time and "selection" in event_time and "time_brush" in event_time["selection"]:
         bounds = event_time["selection"]["time_brush"]
         if "Zeit" in bounds and len(bounds["Zeit"]) == 2:
-            st.session_state.time_x_range = [float(bounds["Zeit"][0]), float(bounds["Zeit"][1])]
+            new_tx = [float(bounds["Zeit"][0]), float(bounds["Zeit"][1])]
+            if st.session_state.time_x_range != new_tx:
+                st.session_state.time_x_range = new_tx
+                st.rerun()
         if "Amplitude" in bounds and len(bounds["Amplitude"]) == 2:
-            st.session_state.time_y_range = [float(bounds["Amplitude"][0]), float(bounds["Amplitude"][1])]
+            new_ty = [float(bounds["Amplitude"][0]), float(bounds["Amplitude"][1])]
+            if st.session_state.time_y_range != new_ty:
+                st.session_state.time_y_range = new_ty
+                st.rerun()
 
-    # Mask signal using active zoom slice
+    # Apply zoomed time window slice to FFT
     mask = (t >= t_start_val) & (t <= t_end_val)
     xfft = data[mask]
     tfft = t[mask]
 
     # ----------------------------------------------------
-    # 2. FFT Spektrum (Altair Box-Zoom)
+    # 2. FFT Spektrum (Altair Box Selection)
     # ----------------------------------------------------
     if len(xfft) > 0:
         L = len(xfft)
@@ -141,10 +147,10 @@ if audio_file is not None:
 
         df_fft = pd.DataFrame({"Frequenz": f_sub[::step_f], "FFT": P_sub[::step_f]})
 
-        brush_fft = alt.selection_interval(encodings=["x", "y"], name="fft_brush")
+        x_scale_fft = alt.Scale(domain=st.session_state.fft_x_range, zero=False) if st.session_state.fft_x_range else alt.Scale(zero=False)
+        y_scale_fft = alt.Scale(domain=st.session_state.fft_y_range, zero=False) if st.session_state.fft_y_range else alt.Scale(zero=False)
 
-        x_scale_fft = alt.Scale(domain=st.session_state.fft_x_range) if st.session_state.fft_x_range else alt.Scale()
-        y_scale_fft = alt.Scale(domain=st.session_state.fft_y_range) if st.session_state.fft_y_range else alt.Scale()
+        brush_fft = alt.selection_interval(encodings=["x", "y"], name="fft_brush")
 
         base_fft = (
             alt.Chart(df_fft)
@@ -155,7 +161,7 @@ if audio_file is not None:
             )
         )
 
-        # Red dashed peak lines
+        # Draw red dashed peak indicators
         rules = []
         if len(user_freqs) > 0:
             df_peaks = pd.DataFrame({"Peak": user_freqs})
@@ -170,13 +176,19 @@ if audio_file is not None:
 
         event_fft = st.altair_chart(chart_fft, use_container_width=True, on_select="rerun", key="fft_chart")
 
-        # Capture and retain box selection coordinates
+        # Capture FFT box selection bounds
         if event_fft and "selection" in event_fft and "fft_brush" in event_fft["selection"]:
             bounds_f = event_fft["selection"]["fft_brush"]
             if "Frequenz" in bounds_f and len(bounds_f["Frequenz"]) == 2:
-                st.session_state.fft_x_range = [float(bounds_f["Frequenz"][0]), float(bounds_f["Frequenz"][1])]
+                new_fx = [float(bounds_f["Frequenz"][0]), float(bounds_f["Frequenz"][1])]
+                if st.session_state.fft_x_range != new_fx:
+                    st.session_state.fft_x_range = new_fx
+                    st.rerun()
             if "FFT" in bounds_f and len(bounds_f["FFT"]) == 2:
-                st.session_state.fft_y_range = [float(bounds_f["FFT"][0]), float(bounds_f["FFT"][1])]
+                new_fy = [float(bounds_f["FFT"][0]), float(bounds_f["FFT"][1])]
+                if st.session_state.fft_y_range != new_fy:
+                    st.session_state.fft_y_range = new_fy
+                    st.rerun()
 
         # ----------------------------------------------------
         # 3. Fourierkoeffizienten & Audio-Synthese
