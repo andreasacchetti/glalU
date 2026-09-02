@@ -9,17 +9,16 @@ import altair as alt
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
 
-# 1. Audio Aufnahme
 audio_file = st.audio_input("Record your audio")
 
 if audio_file is not None:
     data, fs = sf.read(io.BytesIO(audio_file.getvalue()))
     if len(data.shape) > 1:
-        data = data[:, 0]  # Mono
+        data = data[:, 0]
     t = np.arange(len(data)) / fs
 
     # ----------------------------------------------------
-    # 1. Time Domain Signal
+    # 1. Signal im Zeitbereich
     # ----------------------------------------------------
     st.subheader("1. Signal im Zeitbereich")
     t_min, t_max = st.slider(
@@ -30,19 +29,18 @@ if audio_file is not None:
         step=0.01
     )
 
-    df_time = pd.DataFrame({"Zeit [s]": t, "Amplitude": data})
-    
-    # Downsample time plot if audio is long to ensure fast rendering
-    if len(df_time) > 10000:
-        step = len(df_time) // 10000
-        df_time_plot = df_time.iloc[::step]
-    else:
-        df_time_plot = df_time
+    # Downsample for fast, stable rendering in Altair
+    max_pts = 5000
+    step = max(1, len(data) // max_pts)
+    df_time = pd.DataFrame({
+        "Zeit": np.round(t[::step], 4),
+        "Amplitude": np.round(data[::step], 4)
+    })
 
-    chart_time = alt.Chart(df_time_plot).mark_line().encode(
-        x=alt.X("Zeit [s]:Q", scale=alt.Scale(zero=False)),
-        y=alt.Y("Amplitude:Q")
-    ).properties(height=200).interactive()
+    chart_time = alt.Chart(df_time).mark_line(color="#1f77b4").encode(
+        x=alt.X("Zeit:Q", title="Zeit [s]"),
+        y=alt.Y("Amplitude:Q", title="Amplitude")
+    ).properties(height=200, width="container").interactive()
 
     st.altair_chart(chart_time, use_container_width=True)
 
@@ -51,7 +49,7 @@ if audio_file is not None:
     tfft = t[mask]
 
     # ----------------------------------------------------
-    # 2. FFT Spectrum & Interactive Peak Selection
+    # 2. FFT Spektrum & Box-Zoom
     # ----------------------------------------------------
     if len(xfft) > 0:
         L = len(xfft)
@@ -64,17 +62,18 @@ if audio_file is not None:
         P[1:-1] *= 2
         f = np.arange(len(P)) * fs / m
 
-        st.subheader("2. FFT Spektrum & Peaks")
-        st.caption("💡 **Klicke direkt auf Peaks im Chart**, um Frequenzen auszuwählen, oder gib sie manuell unten ein.")
+        st.subheader("2. FFT Spektrum (Ziehe eine Box zum Zoomen)")
 
-        # Prepare FFT DataFrame (capped at 5kHz)
         valid_mask = f <= 5000
+        f_sub = f[valid_mask]
+        P_sub = P[valid_mask]
+
+        step_fft = max(1, len(f_sub) // max_pts)
         df_fft = pd.DataFrame({
-            "Frequenz [Hz]": f[valid_mask],
-            "|FFT|": P[valid_mask]
+            "Frequenz": np.round(f_sub[::step_fft], 2),
+            "Magnitude": np.round(P_sub[::step_fft], 5)
         })
 
-        # Manual Number Inputs for precise tweaking
         with st.expander("🎯 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
             cols = st.columns(5)
             user_freqs = []
@@ -91,7 +90,6 @@ if audio_file is not None:
                     if val > 0:
                         user_freqs.append(val)
 
-        # Snap manual input frequencies to nearest local maximum within 50Hz
         snapped_peaks = []
         df_max = 50
         for u_freq in user_freqs:
@@ -102,48 +100,40 @@ if audio_file is not None:
                 exact_peak = float(u_freq)
             snapped_peaks.append(exact_peak)
 
-        # Build Interactive Altair FFT Plot
-        brush_selection = alt.selection_point(on="click", nearest=True, fields=["Frequenz [Hz]"])
+        # Box-Zoom via Interval Selection
+        box_brush = alt.selection_interval(encodings=['x', 'y'])
 
-        base_spectrum = alt.Chart(df_fft).mark_line(color="#1f77b4").encode(
-            x=alt.X("Frequenz [Hz]:Q", scale=alt.Scale(zero=False)),
-            y=alt.Y("|FFT|:Q"),
-            tooltip=["Frequenz [Hz]", "|FFT|"]
-        ).properties(height=350)
+        # Main detail plot that zooms when box is drawn
+        base = alt.Chart(df_fft).mark_line(color="#1f77b4").encode(
+            x=alt.X("Frequenz:Q", title="Frequenz [Hz]", scale=alt.Scale(zero=False)),
+            y=alt.Y("Magnitude:Q", title="|FFT|", scale=alt.Scale(zero=False)),
+            tooltip=["Frequenz", "Magnitude"]
+        ).properties(height=380, width="container")
 
-        # Clickable hit-targets on spectrum
-        points = alt.Chart(df_fft).mark_point(size=30, opacity=0).encode(
-            x="Frequenz [Hz]:Q",
-            y="|FFT|:Q"
-        ).add_params(brush_selection)
+        # Overview minimap to draw the box zoom region
+        overview = base.properties(height=100).add_params(box_brush)
+        
+        # Detail plot zoomed into the selection
+        detail = base.encode(
+            x=alt.X("Frequenz:Q", scale=alt.Scale(domain=box_brush.empty())),
+            y=alt.Y("Magnitude:Q", scale=alt.Scale(domain=box_brush.empty()))
+        )
 
-        # Red dashed lines for entered peaks
         if len(snapped_peaks) > 0:
             df_peaks = pd.DataFrame({"Peak": snapped_peaks})
-            peak_lines = alt.Chart(df_peaks).mark_rule(
+            peak_rules = alt.Chart(df_peaks).mark_rule(
                 color="red", 
                 strokeDash=[4, 4], 
                 strokeWidth=2
-            ).encode(
-                x="Peak:Q"
-            )
-            fft_chart = (base_spectrum + points + peak_lines).interactive()
+            ).encode(x="Peak:Q")
+            final_fft = (detail + peak_rules) & overview
         else:
-            fft_chart = (base_spectrum + points).interactive()
+            final_fft = detail & overview
 
-        # Render Chart and catch click events
-        chart_event = st.altair_chart(fft_chart, use_container_width=True, on_select="rerun")
-
-        # Extract clicked frequency directly from chart interaction
-        if chart_event and "selection" in chart_event and "param_1" in chart_event["selection"]:
-            clicked_data = chart_event["selection"]["param_1"]
-            if clicked_data and len(clicked_data) > 0:
-                clicked_freq = clicked_data[0].get("Frequenz [Hz]")
-                if clicked_freq and clicked_freq not in snapped_peaks:
-                    snapped_peaks.append(clicked_freq)
+        st.altair_chart(final_fft, use_container_width=True)
 
         # ----------------------------------------------------
-        # 3. Fourier Coefficients & Audio Synthesis
+        # 3. Fourierkoeffizienten & Synthese
         # ----------------------------------------------------
         if len(snapped_peaks) > 0:
             st.subheader("3. Fourierkoeffizienten & Audio-Synthese")
@@ -165,18 +155,10 @@ if audio_file is not None:
                     export_str += f"{f_val:.2f}\t{a_val:.5f}\t{b_val:.5f}\n"
 
                 st.text_area("Berechnete Koeffizienten", export_str, height=160)
-                st.download_button(
-                    "💾 Fourierdaten exportieren (.txt)", 
-                    export_str, 
-                    "Fourierkoeffizienten.txt", 
-                    "text/plain"
-                )
+                st.download_button("💾 Fourierdaten exportieren (.txt)", export_str, "Fourierkoeffizienten.txt", "text/plain")
 
             with col_right:
-                st.markdown("**🔊 Audio-Wiedergabe**")
                 st.audio(audio_file.getvalue(), format="audio/wav")
-                st.caption("Originale Audioaufnahme")
-
                 xsynth = np.zeros_like(tfft)
                 for i in range(len(snapped_peaks)):
                     xsynth += a_coeffs[i] * np.cos(2 * np.pi * snapped_peaks[i] * tfft)
@@ -188,4 +170,3 @@ if audio_file is not None:
                 synth_buffer = io.BytesIO()
                 sf.write(synth_buffer, xsynth, fs, format="WAV")
                 st.audio(synth_buffer.getvalue(), format="audio/wav")
-                st.caption(f"Synthetisiertes Signal ({len(snapped_peaks)} Peaks)")
