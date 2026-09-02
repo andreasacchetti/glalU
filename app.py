@@ -65,6 +65,16 @@ if audio_file is not None:
     data, fs = sf.read(io.BytesIO(current_bytes))
     if len(data.shape) > 1:
         data = data[:, 0]
+
+    # ----------------------------------------------------
+    # 10-Second Duration Cap (Memory & Resource Safeguard)
+    # ----------------------------------------------------
+    max_seconds = 10.0
+    max_samples = int(max_seconds * fs)
+    if len(data) > max_samples:
+        data = data[:max_samples]
+        st.warning(f"⚠️ Die Aufnahme wurde auf maximal {int(max_seconds)} Sekunden gekürzt, um die Performance zu optimieren.")
+
     t = np.arange(len(data)) / fs
 
     # ----------------------------------------------------
