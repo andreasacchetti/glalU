@@ -3,9 +3,7 @@ import numpy as np
 import scipy.fft as fft
 import soundfile as sf
 import streamlit as st
-
-from bokeh.plotting import figure
-from bokeh.models import Span, Label
+import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
@@ -19,7 +17,7 @@ if audio_file is not None:
         data = data[:, 0]
     t = np.arange(len(data)) / fs
 
-    # 2. Time-Domain Signal
+    # 2. Signal im Zeitbereich & FFT-Bereich
     st.subheader("1. Signal im Zeitbereich & FFT-Bereich")
     t_min, t_max = st.slider(
         "FFT-Analysebereich anpassen [s]:",
@@ -29,19 +27,23 @@ if audio_file is not None:
         step=0.01
     )
 
-    p_time = figure(height=220, sizing_mode="stretch_width", x_axis_label="Zeit [s]", y_axis_label="Amplitude")
-    p_time.line(t, data, color="#1f77b4")
-    
-    # Orange FFT window box
-    from bokeh.models import BoxAnnotation
-    p_time.add_layout(BoxAnnotation(left=t_min, right=t_max, fill_color="orange", fill_alpha=0.3))
-    st.bokeh_chart(p_time, use_container_width=True)
+    fig_time = go.Figure()
+    fig_time.add_trace(go.Scatter(x=t, y=data, mode="lines", name="Signal"))
+    fig_time.add_vrect(
+        x0=t_min, x1=t_max, fillcolor="orange", opacity=0.3,
+        layer="below", line_width=0, annotation_text="FFT Window"
+    )
+    fig_time.update_layout(
+        xaxis_title="Zeit [s]", yaxis_title="Amplitude",
+        margin=dict(l=20, r=20, t=30, b=20), height=220
+    )
+    st.plotly_chart(fig_time, use_container_width=True)
 
     mask = (t >= t_min) & (t <= t_max)
     xfft = data[mask]
     tfft = t[mask]
 
-    # 3. FFT Spectrum
+    # 3. FFT Spektrum & Peaks
     if len(xfft) > 0:
         L = len(xfft)
         m = int(2 ** np.ceil(np.log2(L)))
@@ -53,26 +55,34 @@ if audio_file is not None:
         P[1:-1] *= 2
         f = np.arange(len(P)) * fs / m
 
-        st.subheader("2. FFT Spektrum & Peaks")
+        st.subheader("2. FFT Spektrum & Peak-Eingabe")
 
-        # 10 Peak Inputs
-        with st.expander("🎯 bis zu 10 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
-            cols = st.columns(5)
-            user_freqs = []
-            for i in range(10):
-                with cols[i % 5]:
-                    val = st.number_input(
-                        f"Peak {i+1} (Hz):", 
-                        min_value=0.0, 
-                        max_value=float(fs/2), 
-                        value=0.0, 
-                        step=10.0,
-                        key=f"peak_in_{i}"
-                    )
-                    if val > 0:
-                        user_freqs.append(val)
+        # Layout split: Zoom Controls & Peak Inputs
+        col_inputs, col_zoom = st.columns([3, 2])
 
-        # Snap to local peak
+        with col_inputs:
+            with st.expander("🎯 bis zu 10 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
+                cols = st.columns(5)
+                user_freqs = []
+                for i in range(10):
+                    with cols[i % 5]:
+                        val = st.number_input(
+                            f"Peak {i+1} (Hz):", 
+                            min_value=0.0, 
+                            max_value=float(fs/2), 
+                            value=0.0, 
+                            step=10.0,
+                            key=f"peak_in_{i}"
+                        )
+                        if val > 0:
+                            user_freqs.append(val)
+
+        with col_zoom:
+            with st.expander("🔍 Fixed Zoom Range (Sperrt den Zoom-Ausschnitt fest)", expanded=True):
+                f_min_view = st.number_input("Frequenz Min [Hz]:", min_value=0.0, max_value=5000.0, value=0.0, step=50.0)
+                f_max_view = st.number_input("Frequenz Max [Hz]:", min_value=10.0, max_value=5000.0, value=2000.0, step=50.0)
+
+        # Snap entered frequencies to maximum local peak within 50Hz
         snapped_peaks = []
         df_max = 50
         for u_freq in user_freqs:
@@ -83,26 +93,32 @@ if audio_file is not None:
                 exact_peak = float(u_freq)
             snapped_peaks.append(exact_peak)
 
-        # Build Bokeh FFT Chart
+        # Build Plotly Chart with LOCKED X-Axis Viewport
         valid_mask = f <= 5000
-        p_fft = figure(
-            height=380, 
-            sizing_mode="stretch_width", 
-            x_axis_label="Frequenz [Hz]", 
-            y_axis_label="|FFT|",
-            tools="pan,wheel_zoom,box_zoom,reset" # Standard zoom/pan tools
-        )
-        p_fft.line(f[valid_mask], P[valid_mask], color="#1f77b4", line_width=1.5)
+        fig_fft = go.Figure()
+        fig_fft.add_trace(go.Scatter(x=f[valid_mask], y=P[valid_mask], mode="lines", name="|FFT|"))
 
-        # Add vertical red lines for each peak
         for peak_f in snapped_peaks:
-            vh_line = Span(location=peak_f, dimension='height', line_color='red', line_dash='dashed', line_width=2)
-            p_fft.add_layout(vh_line)
-            p_fft.add_layout(Label(x=peak_f, y=max(P[valid_mask])*0.8, text=f"{peak_f:.1f}Hz", text_color="red"))
+            fig_fft.add_vline(
+                x=peak_f, 
+                line_width=2, 
+                line_dash="dash", 
+                line_color="red",
+                annotation_text=f"{peak_f:.1f} Hz",
+                annotation_position="top right"
+            )
 
-        st.bokeh_chart(p_fft, use_container_width=True)
+        fig_fft.update_layout(
+            xaxis_title="Frequenz [Hz]", 
+            yaxis_title="|FFT|",
+            margin=dict(l=20, r=20, t=30, b=20), 
+            height=380,
+            xaxis=dict(range=[f_min_view, f_max_view])  # Hard-locks the viewport range!
+        )
 
-        # 4. Coefficients & Synthesis
+        st.plotly_chart(fig_fft, use_container_width=True)
+
+        # 4. Koeffizienten & Synthese Audio
         if len(snapped_peaks) > 0:
             st.subheader("3. Fourierkoeffizienten & Audio-Synthese")
             col_left, col_right = st.columns([1, 1])
