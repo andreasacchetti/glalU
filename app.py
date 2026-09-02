@@ -8,7 +8,9 @@ import plotly.graph_objects as go
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
 
-# Store zoom state dynamically
+# Initialize persistent zoom ranges for both plots
+if "time_x_range" not in st.session_state:
+    st.session_state.time_x_range = None
 if "fft_x_range" not in st.session_state:
     st.session_state.fft_x_range = None
 
@@ -20,17 +22,12 @@ if audio_file is not None:
         data = data[:, 0]
     t = np.arange(len(data)) / fs
 
-    # 1. Signal im Zeitbereich
+    # ----------------------------------------------------
+    # 1. Signal im Zeitbereich (Zoom defines FFT window)
+    # ----------------------------------------------------
     st.subheader("1. Signal im Zeitbereich")
-    t_min, t_max = st.slider(
-        "FFT-Analysebereich anpassen [s]:",
-        min_value=0.0,
-        max_value=float(t[-1]),
-        value=(0.0, float(t[-1])),
-        step=0.01
-    )
+    st.caption("🔍 **Nutze den Plotly Box-Zoom:** Ziehe ein Rechteck, um den zeitlichen Analysebereich auszuwählen. Doppelklick setzt die Ansicht zurück.")
 
-    # Time-Domain Chart
     step_t = max(1, len(t) // 5000)
     fig_time = go.Figure()
     fig_time.add_trace(go.Scatter(
@@ -38,21 +35,48 @@ if audio_file is not None:
         mode='lines', line=dict(color='#1f77b4', width=1),
         name="Audio"
     ))
-    fig_time.add_vline(x=t_min, line_width=2, line_color="orange")
-    fig_time.add_vline(x=t_max, line_width=2, line_color="orange")
-    fig_time.update_layout(
-        height=200,
+
+    layout_time = dict(
+        height=220,
         margin=dict(l=20, r=20, t=20, b=30),
         xaxis_title="Zeit [s]",
-        yaxis_title="Amplitude"
+        yaxis_title="Amplitude",
+        dragmode="zoom"
     )
-    st.plotly_chart(fig_time, use_container_width=True)
+
+    if st.session_state.time_x_range is not None:
+        layout_time["xaxis"] = dict(range=st.session_state.time_x_range)
+
+    fig_time.update_layout(**layout_time)
+
+    # Render Time Plot and catch zoom events
+    event_time = st.plotly_chart(
+        fig_time, 
+        use_container_width=True, 
+        on_select="rerun",
+        key="time_plot"
+    )
+
+    # Sync Time Zoom to Session State
+    if event_time and "selection" in event_time and "box" in event_time["selection"]:
+        box_t = event_time["selection"]["box"]
+        if len(box_t) > 0 and "x" in box_t[0]:
+            st.session_state.time_x_range = [min(box_t[0]["x"]), max(box_t[0]["x"])]
+            st.rerun()
+
+    # Determine time slice from zoom or default to full audio
+    if st.session_state.time_x_range is not None:
+        t_min, t_max = st.session_state.time_x_range
+    else:
+        t_min, t_max = float(t[0]), float(t[-1])
 
     mask = (t >= t_min) & (t <= t_max)
     xfft = data[mask]
     tfft = t[mask]
 
+    # ----------------------------------------------------
     # 2. FFT Spektrum
+    # ----------------------------------------------------
     if len(xfft) > 0:
         L = len(xfft)
         m = int(2 ** np.ceil(np.log2(L)))
@@ -65,14 +89,14 @@ if audio_file is not None:
         f = np.arange(len(P)) * fs / m
 
         st.subheader("2. FFT Spektrum")
-        st.caption("💡 **Box-Zoom:** Ziehe ein Rechteck mit der Maus zum Zoomen. **Doppelklick** setzt den Zoom vollständig zurück.")
+        st.caption("💡 **Box-Zoom:** Ziehe ein Rechteck zum Zoomen. **Doppelklick** setzt den Zoom auf das gesamte Spektrum zurück.")
 
         valid_mask = f <= 5000
         f_sub = f[valid_mask]
         P_sub = P[valid_mask]
         step_f = max(1, len(f_sub) // 5000)
 
-        # Peak inputs
+        # 10 Peak inputs
         with st.expander("🎯 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
             cols = st.columns(5)
             user_freqs = []
@@ -86,20 +110,20 @@ if audio_file is not None:
                         step=10.0,
                         key=f"peak_in_{i}"
                     )
-                    if val > 0:
-                        user_freqs.append(val)
+                    user_freqs.append(val)
 
         snapped_peaks = []
         df_max = 50
         for u_freq in user_freqs:
-            idx_search = np.abs(f - u_freq) < df_max
-            if np.any(idx_search):
-                exact_peak = float(f[idx_search][np.argmax(P[idx_search])])
-            else:
-                exact_peak = float(u_freq)
-            snapped_peaks.append(exact_peak)
+            if u_freq > 0:
+                idx_search = np.abs(f - u_freq) < df_max
+                if np.any(idx_search):
+                    exact_peak = float(f[idx_search][np.argmax(P[idx_search])])
+                else:
+                    exact_peak = float(u_freq)
+                snapped_peaks.append(exact_peak)
 
-        # Plotly Spectrum Construction
+        # Plotly FFT Chart
         fig_fft = go.Figure()
         fig_fft.add_trace(go.Scatter(
             x=f_sub[::step_f], y=P_sub[::step_f],
@@ -107,45 +131,44 @@ if audio_file is not None:
             name="|FFT|"
         ))
 
-        for peak_f in snapped_peaks:
-            fig_fft.add_vline(x=peak_f, line_width=2, line_dash="dash", line_color="red")
+        # Add vertical peak lines (red dashed if active, hidden/transparent if 0)
+        for i in range(10):
+            val = user_freqs[i]
+            if val > 0:
+                peak_f = snapped_peaks[len([v for v in user_freqs[:i] if v > 0])]
+                fig_fft.add_vline(x=peak_f, line_width=2, line_dash="dash", line_color="red")
 
-        layout_kwargs = dict(
+        layout_fft = dict(
             height=380,
             margin=dict(l=20, r=20, t=30, b=30),
             xaxis_title="Frequenz [Hz]",
             yaxis_title="|FFT|",
-            dragmode="select"
+            dragmode="zoom"
         )
 
-        # Apply saved range if set, otherwise auto-scale
         if st.session_state.fft_x_range is not None:
-            layout_kwargs["xaxis"] = dict(range=st.session_state.fft_x_range)
+            layout_fft["xaxis"] = dict(range=st.session_state.fft_x_range)
 
-        fig_fft.update_layout(**layout_kwargs)
+        fig_fft.update_layout(**layout_fft)
 
-        # Capture interaction events
-        chart_event = st.plotly_chart(
+        # Render FFT Plot and catch zoom events
+        event_fft = st.plotly_chart(
             fig_fft, 
             use_container_width=True, 
             on_select="rerun",
-            selection_mode=["box"]
+            key="fft_plot"
         )
 
-        # Sync events back to state
-        if chart_event and "selection" in chart_event:
-            box_data = chart_event["selection"].get("box", [])
-            if len(box_data) > 0 and "x" in box_data[0]:
-                x_bounds = box_data[0]["x"]
-                if len(x_bounds) == 2:
-                    st.session_state.fft_x_range = [min(x_bounds), max(x_bounds)]
-            else:
-                # Double-click or selection cleared -> reset view
-                if st.session_state.fft_x_range is not None:
-                    st.session_state.fft_x_range = None
-                    st.rerun()
+        # Update persistent FFT range from selection box
+        if event_fft and "selection" in event_fft and "box" in event_fft["selection"]:
+            box_f = event_fft["selection"]["box"]
+            if len(box_f) > 0 and "x" in box_f[0]:
+                st.session_state.fft_x_range = [min(box_f[0]["x"]), max(box_f[0]["x"])]
+                st.rerun()
 
-        # 3. Fourierkoeffizienten & Synthese
+        # ----------------------------------------------------
+        # 3. Fourierkoeffizienten & Audio-Synthese
+        # ----------------------------------------------------
         if len(snapped_peaks) > 0:
             st.subheader("3. Fourierkoeffizienten & Audio-Synthese")
             col_left, col_right = st.columns([1, 1])
