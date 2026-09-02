@@ -4,4 +4,3 @@ scipy
 soundfile
 plotly
 pandas
-bokeh
