@@ -8,6 +8,7 @@ import altair as alt
 
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
+st.caption("ℹ️ **Hinweis:** Aus Leistungsgründen werden Aufnahmen automatisch auf die **ersten 10 Sekunden** beschränkt.")
 
 # ----------------------------------------------------
 # Session State Setup
@@ -69,12 +70,19 @@ if audio_file is not None:
     if len(data.shape) > 1:
         data = data[:, 0]
 
-    # --- HARD 10-SECOND CUTOFF ---
-    # Enforces the 10-second ceiling deterministically in Python
+    # Calculate actual duration
+    raw_duration = len(data) / fs
+
+    # --- HARD 10-SECOND CUTOFF & UI REMARK ---
     max_samples = int(10 * fs)
     if len(data) > max_samples:
         data = data[:max_samples]
-        st.info("ℹ️ Aufnahme wurde automatisch auf die ersten 10 Sekunden gekürzt.")
+        st.warning(
+            f"⏱️ **Aufnahmenlänge ({raw_duration:.1f}s) überschreitet das Limit.** "
+            f"Die Datei wurde auf die ersten **10,0 Sekunden** gekürzt."
+        )
+    else:
+        st.success(f"✅ Aufnahme geladen ({raw_duration:.2f}s).")
 
     t = np.arange(len(data)) / fs
 
@@ -198,7 +206,7 @@ if audio_file is not None:
         with col_f_btn_fwd:
             if st.button("⏩", key="fwd_fft_zoom", help="Vorwärts", disabled=len(st.session_state.fft_redo) == 0):
                 st.session_state.fft_undo.append((st.session_state.fft_x_range, st.session_state.fft_y_range))
-                next_fx, next_fy = st.session_state.fft_redo.pop()
+                next_fx, next_fy = st.session_state.fft_undo.pop()
                 st.session_state.fft_x_range = next_fx
                 st.session_state.fft_y_range = next_fy
                 st.rerun()
