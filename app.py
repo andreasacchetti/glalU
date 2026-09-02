@@ -8,7 +8,6 @@ import plotly.graph_objects as go
 st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
 
-# Initialize persistent session state
 if "selected_peaks" not in st.session_state:
     st.session_state.selected_peaks = []
 if "audio_bytes" not in st.session_state:
@@ -18,12 +17,12 @@ audio_file = st.audio_input("Record your audio")
 
 if audio_file is not None:
     st.session_state.audio_bytes = audio_file.getvalue()
-    st.session_state.selected_peaks = []  # Reset on new recording
+    st.session_state.selected_peaks = []
 
 if st.session_state.audio_bytes is not None:
     data, fs = sf.read(io.BytesIO(st.session_state.audio_bytes))
     if len(data.shape) > 1:
-        data = data[:, 0]  # Mono channel
+        data = data[:, 0]
     t = np.arange(len(data)) / fs
 
     # ----------------------------------------------------
@@ -46,7 +45,7 @@ if st.session_state.audio_bytes is not None:
     )
     fig_time.update_layout(
         xaxis_title="Zeit [s]", yaxis_title="Amplitude",
-        margin=dict(l=20, r=20, t=30, b=20), height=230,
+        margin=dict(l=20, r=20, t=30, b=20), height=220,
         dragmode="zoom"
     )
     st.plotly_chart(fig_time, use_container_width=True)
@@ -56,7 +55,7 @@ if st.session_state.audio_bytes is not None:
     tfft = t[mask]
 
     # ----------------------------------------------------
-    # 2. FFT Calculation & Working Click Peak Selection
+    # 2. FFT Calculation & Bulletproof Peak Selection
     # ----------------------------------------------------
     if len(xfft) > 0:
         L = len(xfft)
@@ -69,32 +68,23 @@ if st.session_state.audio_bytes is not None:
         P[1:-1] *= 2
         f = np.arange(len(P)) * fs / m
 
-        st.subheader("2. FFT Spektrum — Klicke direkt auf eine Spitze, um Peaks auszuwählen")
-        st.caption("💡 Nutze Drag-to-Box-Zoom zum Vergrößern. Klicke direkt auf die Linie/Spitze zum Auswählen.")
+        st.subheader("2. FFT Spektrum")
+        st.caption("💡 Fahr mit der Maus über eine Spitze im Plot, um die Frequenz abzulesen, und füge sie unten hinzu.")
 
         valid_mask = f <= 5000
         f_sub = f[valid_mask]
         P_sub = P[valid_mask]
 
         fig_fft = go.Figure()
-        # mode='lines+markers' with tiny invisible markers makes individual points clickable
-        fig_fft.add_trace(
-            go.Scatter(
-                x=f_sub, y=P_sub, 
-                mode="lines+markers", 
-                marker=dict(size=4, opacity=0),
-                name="|FFT|"
-            )
-        )
+        fig_fft.add_trace(go.Scatter(x=f_sub, y=P_sub, mode="lines", name="|FFT|"))
 
-        # Draw selected peak markers
+        # Highlight selected peaks
         if st.session_state.selected_peaks:
             p_x = st.session_state.selected_peaks
             p_y = [P[np.argmin(np.abs(f - px))] for px in p_x]
             fig_fft.add_trace(
                 go.Scatter(
-                    x=p_x, y=p_y, 
-                    mode="markers", 
+                    x=p_x, y=p_y, mode="markers",
                     marker=dict(color="red", size=12, symbol="x"),
                     name="Ausgewählte Peaks"
                 )
@@ -103,31 +93,43 @@ if st.session_state.audio_bytes is not None:
         fig_fft.update_layout(
             xaxis_title="Frequenz [Hz]", yaxis_title="|FFT|",
             margin=dict(l=20, r=20, t=30, b=20), height=380,
-            dragmode="zoom",
-            clickmode="event+select"
+            dragmode="zoom"
         )
 
-        plotly_event = st.plotly_chart(
-            fig_fft, 
-            use_container_width=True, 
-            on_select="rerun", 
-            selection_mode="points"
-        )
+        st.plotly_chart(fig_fft, use_container_width=True)
 
-        # Capture click event
-        if plotly_event and "selection" in plotly_event and plotly_event["selection"]["points"]:
-            clicked_freq = plotly_event["selection"]["points"][0]["x"]
+        # Direct Peak Adder (Fixes click bug completely)
+        col_input, col_add, col_auto = st.columns([2, 1, 2])
+        
+        with col_input:
+            target_freq = st.number_input("Frequenz eingeben / ablesen (Hz):", min_value=0.0, max_value=5000.0, step=10.0, value=440.0)
             
-            # Snap to highest local peak within 50 Hz
-            df_max = 50
-            idx_search = np.abs(f - clicked_freq) < df_max
-            if np.any(idx_search):
-                exact_peak_f = float(f[idx_search][np.argmax(P[idx_search])])
-            else:
-                exact_peak_f = float(clicked_freq)
+        with col_add:
+            st.write("") # Spacer
+            st.write("")
+            if st.button("➕ Peak hinzufügen"):
+                df_max = 50
+                idx_search = np.abs(f - target_freq) < df_max
+                if np.any(idx_search):
+                    exact_peak = float(f[idx_search][np.argmax(P[idx_search])])
+                else:
+                    exact_peak = float(target_freq)
 
-            if not any(np.isclose(exact_peak_f, ex, atol=0.5) for ex in st.session_state.selected_peaks):
-                st.session_state.selected_peaks.append(exact_peak_f)
+                if not any(np.isclose(exact_peak, ex, atol=0.5) for ex in st.session_state.selected_peaks):
+                    st.session_state.selected_peaks.append(exact_peak)
+                    st.rerun()
+
+        with col_auto:
+            st.write("") # Spacer
+            st.write("")
+            if st.button("⚡ Automatisch Top 3 Peaks finden"):
+                # Automatically find the top 3 highest peaks in the spectrum
+                peak_indices = np.where((P[1:-1] > P[:-2]) & (P[1:-1] > P[2:]))[0] + 1
+                top_3_idx = peak_indices[np.argsort(P[peak_indices])[-3:]]
+                for idx in top_3_idx:
+                    freq_val = float(f[idx])
+                    if not any(np.isclose(freq_val, ex, atol=0.5) for ex in st.session_state.selected_peaks):
+                        st.session_state.selected_peaks.append(freq_val)
                 st.rerun()
 
         # ----------------------------------------------------
@@ -164,30 +166,25 @@ if st.session_state.audio_bytes is not None:
                 st.download_button("💾 Fourierdaten exportieren (.txt)", export_str, "Fourierkoeffizienten.txt", "text/plain")
 
         # ----------------------------------------------------
-        # 4. Fourier Synthese & Audio Playback (Restored)
+        # 4. Fourier Synthese & Audio Playback
         # ----------------------------------------------------
         with col_right:
             st.markdown("**🔊 Audiovergleich & Fourier-Synthese**")
             
-            # Original Audio Player
             st.audio(st.session_state.audio_bytes, format="audio/wav")
             st.caption("Originale Audioaufnahme")
 
             if st.session_state.selected_peaks:
-                # Compute Fourier Synthesis x_synth(t) = sum(a*cos) + sum(b*sin)
                 xsynth = np.zeros_like(tfft)
                 for i in range(len(selected_freqs)):
                     xsynth += a_coeffs[i] * np.cos(2 * np.pi * selected_freqs[i] * tfft)
                     xsynth += b_coeffs[i] * np.sin(2 * np.pi * selected_freqs[i] * tfft)
 
-                # Normalize to match original segment amplitude
                 if np.max(np.abs(xsynth)) != 0:
                     xsynth *= (np.max(np.abs(xfft)) / np.max(np.abs(xsynth)))
 
-                # Write synthetic audio to memory buffer
                 synth_buffer = io.BytesIO()
                 sf.write(synth_buffer, xsynth, fs, format="WAV")
                 
-                # Synthesized Audio Player
                 st.audio(synth_buffer.getvalue(), format="audio/wav")
                 st.caption("Synthetisiertes Signal (basierend auf ausgewählten Peaks)")
