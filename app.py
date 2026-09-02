@@ -10,7 +10,7 @@ st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
 
 # ----------------------------------------------------
-# Session State: Undo / Redo Stacks & State Tracking
+# Session State Setup
 # ----------------------------------------------------
 if "time_undo" not in st.session_state:
     st.session_state.time_undo = []
@@ -30,29 +30,37 @@ if "fft_x_range" not in st.session_state:
 if "fft_y_range" not in st.session_state:
     st.session_state.fft_y_range = None
 
-if "audio_id" not in st.session_state:
-    st.session_state.audio_id = None
+if "last_audio_len" not in st.session_state:
+    st.session_state.last_audio_len = None
+
+
+def reset_all_session_states():
+    """Completely purges zoom memory and input widget state for BOTH charts."""
+    st.session_state.time_undo.clear()
+    st.session_state.time_redo.clear()
+    st.session_state.time_x_range = None
+    st.session_state.time_y_range = None
+
+    st.session_state.fft_undo.clear()
+    st.session_state.fft_redo.clear()
+    st.session_state.fft_x_range = None
+    st.session_state.fft_y_range = None
+
+    for i in range(10):
+        key = f"peak_in_{i}"
+        st.session_state[key] = 0.0
+
 
 audio_file = st.audio_input("Record your audio")
 
 if audio_file is not None:
     current_bytes = audio_file.getvalue()
 
-    # Reset all zoom parameters and peaks if a new audio recording is captured
-    if st.session_state.audio_id != current_bytes:
-        st.session_state.audio_id = current_bytes
-        st.session_state.time_undo.clear()
-        st.session_state.time_redo.clear()
-        st.session_state.time_x_range = None
-        st.session_state.time_y_range = None
-
-        st.session_state.fft_undo.clear()
-        st.session_state.fft_redo.clear()
-        st.session_state.fft_x_range = None
-        st.session_state.fft_y_range = None
-
-        for i in range(10):
-            st.session_state[f"peak_in_{i}"] = 0.0
+    # Reset ALL states (Time + FFT + Peaks) if a new recording is received
+    if st.session_state.last_audio_len != len(current_bytes):
+        st.session_state.last_audio_len = len(current_bytes)
+        reset_all_session_states()
+        st.rerun()
 
     data, fs = sf.read(io.BytesIO(current_bytes))
     if len(data.shape) > 1:
@@ -262,7 +270,7 @@ if audio_file is not None:
                         key=f"peak_in_{i}"
                     )
                     if val > 0:
-                        user_freqs.append(val)
+                        user_freqs.append((i + 1, val))
 
         # ----------------------------------------------------
         # 3. Fourierkoeffizienten & Audio-Synthese
@@ -271,9 +279,11 @@ if audio_file is not None:
             st.subheader("3. Fourierkoeffizienten & Audio-Synthese")
             col_left, col_right = st.columns([1, 1])
 
-            a_coeffs, b_coeffs = [], []
-            for u_freq in user_freqs:
+            peak_indices, freqs_list, a_coeffs, b_coeffs = [], [], [], []
+            for p_idx, u_freq in user_freqs:
                 idx = np.abs(f - u_freq) < (fs / m)
+                peak_indices.append(p_idx)
+                freqs_list.append(u_freq)
                 if np.any(idx):
                     a_coeffs.append(float(np.max(ReZ[idx]) + np.min(ReZ[idx])))
                     b_coeffs.append(float(-(np.max(ImZ[idx]) + np.min(ImZ[idx]))))
@@ -282,25 +292,24 @@ if audio_file is not None:
                     b_coeffs.append(0.0)
 
             with col_left:
-                export_str = "f(Hz)\ta_k\tb_k\n"
-                for f_val, a_val, b_val in zip(user_freqs, a_coeffs, b_coeffs):
-                    export_str += f"{f_val:.2f}\t{a_val:.5f}\t{b_val:.5f}\n"
+                export_str = f"{'Peak':<8}{'f [Hz]':<12}{'a_k':<14}{'b_k':<14}\n"
+                export_str += "-" * 48 + "\n"
+                for p_i, f_val, a_val, b_val in zip(peak_indices, freqs_list, a_coeffs, b_coeffs):
+                    export_str += f"P{p_i:<7}{f_val:<12.2f}{a_val:<14.5f}{b_val:<14.5f}\n"
 
-                st.text_area("Berechnete Koeffizienten", export_str, height=160)
+                st.text_area("Berechnete Fourierkoeffizienten", export_str, height=180)
                 st.download_button("💾 Fourierdaten exportieren (.txt)", export_str, "Fourierkoeffizienten.txt", "text/plain")
 
             with col_right:
-                # 1. Original Audio Cut (Cropped to FFT window)
                 st.caption("🎵 **Originalsignal (Ausschnitt)**")
                 orig_cut_buffer = io.BytesIO()
                 sf.write(orig_cut_buffer, xfft, fs, format="WAV")
                 st.audio(orig_cut_buffer.getvalue(), format="audio/wav")
 
-                # 2. Synthesized Audio (Cropped to FFT window)
                 xsynth = np.zeros_like(tfft)
-                for i in range(len(user_freqs)):
-                    xsynth += a_coeffs[i] * np.cos(2 * np.pi * user_freqs[i] * tfft)
-                    xsynth += b_coeffs[i] * np.sin(2 * np.pi * user_freqs[i] * tfft)
+                for i in range(len(freqs_list)):
+                    xsynth += a_coeffs[i] * np.cos(2 * np.pi * freqs_list[i] * tfft)
+                    xsynth += b_coeffs[i] * np.sin(2 * np.pi * freqs_list[i] * tfft)
 
                 if np.max(np.abs(xsynth)) != 0:
                     xsynth *= (np.max(np.abs(xfft)) / np.max(np.abs(xsynth)))
