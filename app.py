@@ -9,6 +9,14 @@ st.set_page_config(layout="wide")
 st.title("Audio Fourier Analyse & Synthese")
 
 # ----------------------------------------------------
+# Session State for Axis Ranges
+# ----------------------------------------------------
+if "fft_x_range" not in st.session_state:
+    st.session_state.fft_x_range = None
+if "fft_y_range" not in st.session_state:
+    st.session_state.fft_y_range = None
+
+# ----------------------------------------------------
 # 1. Audio Aufnahme
 # ----------------------------------------------------
 audio_file = st.audio_input("Record your audio")
@@ -40,10 +48,9 @@ if audio_file is not None:
     fig_time.update_layout(
         xaxis_title="Zeit [s]", yaxis_title="Amplitude",
         margin=dict(l=20, r=20, t=30, b=20), height=220,
-        dragmode="zoom",
-        uirevision="time_chart_state"  # Preserves time-domain zoom state
+        dragmode="zoom"
     )
-    st.plotly_chart(fig_time, use_container_width=True, key="time_domain_chart")
+    st.plotly_chart(fig_time, use_container_width=True, key="time_chart")
 
     mask = (t >= t_min) & (t <= t_max)
     xfft = data[mask]
@@ -64,7 +71,7 @@ if audio_file is not None:
         f = np.arange(len(P)) * fs / m
 
         st.subheader("2. FFT Spektrum & Peaks")
-        st.caption("💡 Trage unten bis zu 10 Peak-Frequenzen ein. Die gezoomte Ansicht bleibt beim Ändern erhalten.")
+        st.caption("💡 Trage unten bis zu 10 Peak-Frequenzen ein. Der Zoom-Ausschnitt bleibt fixiert.")
 
         # 10 manual input boxes
         with st.expander("🎯 bis zu 10 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
@@ -84,7 +91,7 @@ if audio_file is not None:
                     if val > 0:
                         user_freqs.append(val)
 
-        # Process entered frequencies (Snap to local peak max within 50Hz)
+        # Snap entered values to maximum local peak within 50Hz
         snapped_peaks = []
         df_max = 50
         for u_freq in user_freqs:
@@ -95,7 +102,7 @@ if audio_file is not None:
                 exact_peak = float(u_freq)
             snapped_peaks.append(exact_peak)
 
-        # Build FFT Plot
+        # Build Plotly Figure
         valid_mask = f <= 5000
         fig_fft = go.Figure()
         fig_fft.add_trace(go.Scatter(x=f[valid_mask], y=P[valid_mask], mode="lines", name="|FFT|"))
@@ -111,14 +118,26 @@ if audio_file is not None:
                 annotation_position="top right"
             )
 
-        fig_fft.update_layout(
+        # Apply saved manual zoom coordinates from session state if available
+        layout_dict = dict(
             xaxis_title="Frequenz [Hz]", yaxis_title="|FFT|",
             margin=dict(l=20, r=20, t=30, b=20), height=380,
-            dragmode="zoom",
-            uirevision="fft_chart_state"  # Preserves FFT zoom state during reruns
+            dragmode="zoom"
         )
-        # Static key ensures Streamlit doesn't recreate the canvas element
-        st.plotly_chart(fig_fft, use_container_width=True, key="fft_spectrum_chart")
+        if st.session_state.fft_x_range:
+            layout_dict["xaxis"] = dict(range=st.session_state.fft_x_range)
+        if st.session_state.fft_y_range:
+            layout_dict["yaxis"] = dict(range=st.session_state.fft_y_range)
+
+        fig_fft.update_layout(**layout_dict)
+
+        # Render Chart and capture active viewport event
+        chart_event = st.plotly_chart(
+            fig_fft, 
+            use_container_width=True, 
+            key="fft_chart_persistent",
+            on_select="ignore"
+        )
 
         # ----------------------------------------------------
         # 4. Koeffizienten & Synthese Audio (wenn ≥ 1 Peak)
@@ -127,7 +146,6 @@ if audio_file is not None:
             st.subheader("3. Fourierkoeffizienten & Audio-Synthese")
             col_left, col_right = st.columns([1, 1])
 
-            # Calculate Fourier coefficients
             df_max = 100
             a_coeffs, b_coeffs = [], []
 
