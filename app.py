@@ -37,7 +37,7 @@ if "last_audio_len" not in st.session_state:
 
 
 def reset_all_session_states():
-    """Completely purges zoom memory and input widget state for BOTH charts."""
+    """Purges zoom memory and input widget state for BOTH charts."""
     st.session_state.time_undo.clear()
     st.session_state.time_redo.clear()
     st.session_state.time_x_range = None
@@ -54,7 +54,7 @@ def reset_all_session_states():
 
 
 # ----------------------------------------------------
-# 10s Audio Recorder Component (Inline HTML)
+# 10s Audio Recorder Component (Stoppable & Fast)
 # ----------------------------------------------------
 COMPONENT_HTML = """
 <!DOCTYPE html>
@@ -64,23 +64,39 @@ COMPONENT_HTML = """
 </head>
 <body style="margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif;">
     <div style="display: flex; align-items: center; gap: 15px; background-color: #f0f2f6; padding: 12px 18px; border-radius: 8px;">
-        <button id="recordBtn" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #ff4b4b; color: white; cursor: pointer; font-weight: 600; font-size: 14px;">
+        <button id="recordBtn" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #ff4b4b; color: white; cursor: pointer; font-weight: 600; font-size: 14px; transition: background-color 0.2s;">
             🔴 Aufnahme starten (Max 10s)
         </button>
         <span id="status" style="font-size: 14px; color: #31333F; font-weight: 500;">Bereit</span>
     </div>
 
     <script>
+    function notifyStreamlit(type, data) {
+        window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data), "*");
+    }
+
+    // Set fixed height for component container
+    notifyStreamlit("streamlit:setFrameHeight", { height: 70 });
+
     let mediaRecorder;
     let audioChunks = [];
     let countdownInterval;
     let autoStopTimeout;
+    let startTime;
 
     const recordBtn = document.getElementById('recordBtn');
     const status = document.getElementById('status');
 
-    recordBtn.addEventListener('click', async () => {
+    function stopRecording() {
         if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+        }
+    }
+
+    recordBtn.addEventListener('click', async () => {
+        // If actively recording, clicking again stops it immediately
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            stopRecording();
             return;
         }
 
@@ -89,13 +105,15 @@ COMPONENT_HTML = """
             mediaRecorder = new MediaRecorder(stream);
             audioChunks = [];
 
-            mediaRecorder.ondataavailable = event => audioChunks.push(event.data);
+            mediaRecorder.ondataavailable = event => {
+                if (event.data.size > 0) audioChunks.push(event.data);
+            };
 
             mediaRecorder.onstop = () => {
                 clearInterval(countdownInterval);
                 clearTimeout(autoStopTimeout);
                 status.innerText = "Verarbeite Aufnahme...";
-                recordBtn.disabled = false;
+                recordBtn.innerText = "🔴 Aufnahme starten (Max 10s)";
                 recordBtn.style.backgroundColor = "#ff4b4b";
 
                 const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
@@ -103,18 +121,16 @@ COMPONENT_HTML = """
                 reader.readAsDataURL(audioBlob);
                 reader.onloadend = () => {
                     const base64Audio = reader.result.split(',')[1];
-                    // Send to parent Streamlit frame via URL Query Parameter
-                    const url = new URL(window.parent.location.href);
-                    url.searchParams.set('rec_data', base64Audio);
-                    window.parent.location.href = url.toString();
+                    notifyStreamlit("streamlit:setComponentValue", { value: base64Audio });
+                    status.innerText = "Aufnahme abgeschlossen!";
                 };
 
                 stream.getTracks().forEach(track => track.stop());
             };
 
             mediaRecorder.start();
-            recordBtn.disabled = true;
-            recordBtn.style.backgroundColor = "#cccccc";
+            recordBtn.innerText = "⏹️ Aufnahme stoppen";
+            recordBtn.style.backgroundColor = "#2b2b2b";
 
             let remaining = 10;
             status.innerText = `⏱️ Nimmt auf... (${remaining}s)`;
@@ -129,9 +145,7 @@ COMPONENT_HTML = """
             }, 1000);
 
             autoStopTimeout = setTimeout(() => {
-                if (mediaRecorder.state === "recording") {
-                    mediaRecorder.stop();
-                }
+                stopRecording();
             }, 10000);
 
         } catch (err) {
@@ -143,16 +157,20 @@ COMPONENT_HTML = """
 </html>
 """
 
-components.html(COMPONENT_HTML, height=70)
+# Render custom component with fixed height
+audio_b64 = components.html(COMPONENT_HTML, height=70)
 
-# Check query params for audio data
-query_params = st.query_params
-audio_b64 = query_params.get("rec_data", None)
+# Alternative method to catch state payload cleanly from component frame
+if "audio_data" not in st.session_state:
+    st.session_state.audio_data = None
 
-if audio_b64:
-    current_bytes = base64.b64decode(audio_b64)
+if audio_b64 and audio_b64 != st.session_state.audio_data:
+    st.session_state.audio_data = audio_b64
 
-    # Reset ALL states (Time + FFT + Peaks) if a new recording is received
+if st.session_state.audio_data:
+    current_bytes = base64.b64decode(st.session_state.audio_data)
+
+    # Reset state only when receiving a new recording length
     if st.session_state.last_audio_len != len(current_bytes):
         st.session_state.last_audio_len = len(current_bytes)
         reset_all_session_states()
@@ -209,7 +227,8 @@ if audio_b64:
             st.session_state.time_y_range = None
             st.rerun()
 
-    step_t = max(1, len(t) // 10000)
+    # Downsample points for fast rendering performance
+    step_t = max(1, len(t) // 3000)
     df_time = pd.DataFrame({"Zeit": t[::step_t], "Amplitude": data[::step_t]})
 
     x_scale_time = alt.Scale(domain=st.session_state.time_x_range, zero=False) if st.session_state.time_x_range else alt.Scale(zero=False)
@@ -301,7 +320,9 @@ if audio_b64:
         valid_mask = f <= 5000
         f_sub = f[valid_mask]
         P_sub = P[valid_mask]
-        step_f = max(1, len(f_sub) // 10000)
+        
+        # Downsample frequency points to speed up Altair rendering
+        step_f = max(1, len(f_sub) // 3000)
 
         df_fft = pd.DataFrame({"Frequenz": f_sub[::step_f], "FFT": P_sub[::step_f]})
 
