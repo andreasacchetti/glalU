@@ -44,7 +44,6 @@ if audio_file is not None:
 
         st.subheader("2. FFT Spektrum & Peaks")
 
-        # Peak input fields
         with st.expander("🎯 bis zu 10 Peak-Frequenzen manuell eingeben (Hz)", expanded=True):
             cols = st.columns(5)
             user_freqs = []
@@ -71,76 +70,79 @@ if audio_file is not None:
                 exact_peak = float(u_freq)
             snapped_peaks.append(exact_peak)
 
-        # Prepare Plotly Data Arrays for raw JS rendering
         valid_mask = f <= 5000
         x_data = f[valid_mask].tolist()
         y_data = P[valid_mask].tolist()
+        max_p = float(np.max(P[valid_mask])) if len(P[valid_mask]) > 0 else 1.0
 
-        # Build vertical peak lines shapes for Plotly JS
+        # Build shapes and annotations with explicit y-coordinates
         shapes = []
         annotations = []
         for peak_f in snapped_peaks:
             shapes.append({
                 'type': 'line',
                 'x0': peak_f, 'x1': peak_f,
-                'y0': 0, 'y1': 1, 'yref': 'paper',
+                'y0': 0, 'y1': max_p * 1.1,
                 'line': {'color': 'red', 'width': 2, 'dash': 'dash'}
             })
             annotations.append({
-                'x': peak_f, 'y': 1, 'yref': 'paper',
-                'text': f"{peak_f:.1f} Hz", 'showarrow': False,
-                'font': {'color': 'red'}
+                'x': peak_f, 'y': max_p * 1.05,
+                'text': f"{peak_f:.1f} Hz",
+                'showarrow': False,
+                'font': {'color': 'red', 'size': 12}
             })
 
-        # Inject pure JavaScript Plotly Component with LocalStorage persistence
         plot_html = f"""
         <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
         <div id="fft_chart" style="width:100%;height:380px;"></div>
         <script>
-            var xData = {json.dumps(x_data)};
-            var yData = {json.dumps(y_data)};
-            var shapes = {json.dumps(shapes)};
-            var annotations = {json.dumps(annotations)};
+            (function() {{
+                var xData = {json.dumps(x_data)};
+                var yData = {json.dumps(y_data)};
+                var shapes = {json.dumps(shapes)};
+                var annotations = {json.dumps(annotations)};
 
-            var trace = {{
-                x: xData,
-                y: yData,
-                type: 'scatter',
-                mode: 'lines',
-                name: '|FFT|'
-            }};
+                var trace = {{
+                    x: xData,
+                    y: yData,
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: '|FFT|'
+                }};
 
-            var layout = {{
-                margin: {{ l: 40, r: 20, t: 20, b: 40 }},
-                xaxis: {{ title: 'Frequenz [Hz]' }},
-                yaxis: {{ title: '|FFT|' }},
-                shapes: shapes,
-                annotations: annotations
-            }};
+                var layout = {{
+                    margin: {{ l: 40, r: 20, t: 30, b: 40 }},
+                    xaxis: {{ title: 'Frequenz [Hz]' }},
+                    yaxis: {{ title: '|FFT|' }},
+                    shapes: shapes,
+                    annotations: annotations
+                }};
 
-            // Check if browser has stored zoom coordinates
-            var savedX = localStorage.getItem('fft_x_range');
-            var savedY = localStorage.getItem('fft_y_range');
+                // Read cached zoom bounds
+                var savedX = localStorage.getItem('fft_x_range');
+                var savedY = localStorage.getItem('fft_y_range');
 
-            if (savedX && savedY) {{
-                layout.xaxis.range = JSON.parse(savedX);
-                layout.yaxis.range = JSON.parse(savedY);
-            }}
-
-            var chartDiv = document.getElementById('fft_chart');
-            Plotly.newPlot(chartDiv, [trace], layout, {{responsive: true}});
-
-            // Capture zoom/pan events and save directly to browser memory
-            chartDiv.on('plotly_relayout', function(eventdata){{
-                if(eventdata['xaxis.range[0]'] !== undefined) {{
-                    localStorage.setItem('fft_x_range', JSON.stringify([eventdata['xaxis.range[0]'], eventdata['xaxis.range[1]']]));
-                    localStorage.setItem('fft_y_range', JSON.stringify([eventdata['yaxis.range[0]'], eventdata['yaxis.range[1]']]));
-                }} else if(eventdata['xaxis.autorange'] === true) {{
-                    // Reset zoom on double-click
-                    localStorage.removeItem('fft_x_range');
-                    localStorage.removeItem('fft_y_range');
+                if (savedX) {{
+                    try {{ layout.xaxis.range = JSON.parse(savedX); }} catch(e) {{}}
                 }}
-            }});
+                if (savedY) {{
+                    try {{ layout.yaxis.range = JSON.parse(savedY); }} catch(e) {{}}
+                }}
+
+                var chartDiv = document.getElementById('fft_chart');
+                Plotly.react(chartDiv, [trace], layout, {{responsive: true}});
+
+                // Save or reset zoom state on relayout
+                chartDiv.on('plotly_relayout', function(eventdata) {{
+                    if (eventdata['xaxis.range[0]'] !== undefined) {{
+                        localStorage.setItem('fft_x_range', JSON.stringify([eventdata['xaxis.range[0]'], eventdata['xaxis.range[1]']]));
+                        localStorage.setItem('fft_y_range', JSON.stringify([eventdata['yaxis.range[0]'], eventdata['yaxis.range[1]']]));
+                    }} else if (eventdata['xaxis.autorange'] || eventdata['autosize']) {{
+                        localStorage.removeItem('fft_x_range');
+                        localStorage.removeItem('fft_y_range');
+                    }}
+                }});
+            }})();
         </script>
         """
 
